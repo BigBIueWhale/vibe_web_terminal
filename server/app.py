@@ -62,10 +62,21 @@ def generate_session_id() -> str:
     return secrets.token_urlsafe(16)
 
 
+def is_port_in_use(port: int) -> bool:
+    """Check if a port is actually in use on the system."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("0.0.0.0", port))
+            return False
+        except OSError:
+            return True
+
+
 def allocate_port() -> int:
     """Allocate an available port for a container."""
     for port in range(HOST_PORT_START, HOST_PORT_END):
-        if port not in port_allocations:
+        if port not in port_allocations and not is_port_in_use(port):
             port_allocations.add(port)
             return port
     raise RuntimeError("No available ports")
