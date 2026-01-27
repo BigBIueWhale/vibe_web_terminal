@@ -313,6 +313,10 @@ async def upload_file(
     try:
         # Create parent directories if needed (for folder uploads)
         filepath.parent.mkdir(parents=True, exist_ok=True)
+        # Ensure all parent directories are writable by container user
+        for parent in filepath.parents:
+            if parent.is_relative_to(workspace):
+                os.chmod(parent, 0o777)
 
         # Stream file to disk in chunks for large files
         async with aiofiles.open(filepath, "wb") as f:
@@ -321,8 +325,8 @@ async def upload_file(
                 await f.write(chunk)
                 total_size += len(chunk)
 
-        # Set proper permissions
-        os.chmod(filepath, 0o666)
+        # Set proper permissions (777 so scripts are executable and container can write)
+        os.chmod(filepath, 0o777)
 
         return {
             "filename": filename,
