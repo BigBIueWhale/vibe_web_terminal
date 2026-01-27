@@ -100,12 +100,17 @@ pip install --quiet --upgrade pip
 pip install --quiet -r server/requirements.txt
 log_info "Dependencies installed."
 
-# Step 4: Build Docker image
-log_info "Building Docker image (this may take a few minutes)..."
-cd docker
-docker build -t vibe-terminal:latest .
-cd ..
-log_info "Docker image built successfully."
+# Step 4: Build Docker image (or skip if already exists)
+if docker image inspect vibe-terminal:latest &> /dev/null; then
+    log_info "Docker image vibe-terminal:latest already exists, skipping build."
+    log_info "(Delete it with 'docker rmi vibe-terminal:latest' to force rebuild)"
+else
+    log_info "Building Docker image (this may take a few minutes)..."
+    cd docker
+    docker build -t vibe-terminal:latest .
+    cd ..
+    log_info "Docker image built successfully."
+fi
 
 # Step 5: Create workspace directory
 log_info "Creating workspace directory..."

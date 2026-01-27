@@ -88,6 +88,44 @@ cd /path/to/vibe-web-terminal
 
 Then open http://localhost:8080 (or your server's IP on port 8080).
 
+## Offline / Internal Network Deployment
+
+The setup is fully offline-friendly. No CDNs or external resources are used at runtime.
+
+### Export for transfer:
+
+```bash
+# Save Docker image to file
+docker save vibe-terminal:latest | gzip > vibe-terminal-image.tar.gz
+
+# Package everything needed
+tar -czf vibe-web-terminal-bundle.tar.gz \
+    --exclude='venv' \
+    --exclude='.git' \
+    -C /home/user/Desktop vibe-web-terminal
+
+# Transfer both files to target machine
+```
+
+### Import on target machine:
+
+```bash
+# Load Docker image
+gunzip -c vibe-terminal-image.tar.gz | docker load
+
+# Extract project files
+tar -xzf vibe-web-terminal-bundle.tar.gz
+
+# Setup (skips Docker build since image already loaded)
+cd vibe-web-terminal
+python3 -m venv venv
+source venv/bin/activate
+pip install -r server/requirements.txt
+
+# Run
+./run.sh
+```
+
 ## Files
 
 ```
