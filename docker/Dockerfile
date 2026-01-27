@@ -58,8 +58,8 @@ WORKDIR /home/vibe
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/home/vibe/.local/bin:$PATH"
 
-# Install Vibe CLI
-RUN /home/vibe/.local/bin/uv tool install mistral-vibe
+# Install Vibe CLI - pinned to tested version (v1.3.5 identical to v1.3.4)
+RUN /home/vibe/.local/bin/uv tool install mistral-vibe==1.3.5
 
 # Create vibe config directory
 RUN mkdir -p /home/vibe/.vibe
