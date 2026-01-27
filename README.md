@@ -16,34 +16,40 @@ A web-based terminal service that provides full Linux terminals with Mistral Vib
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    Web Browser                          │
-│                   (xterm.js/ttyd)                       │
-└─────────────────────┬───────────────────────────────────┘
-                      │ HTTP/WebSocket
-                      ▼
-┌─────────────────────────────────────────────────────────┐
-│              FastAPI Server (:8080)                     │
-│         - Session Management                            │
-│         - File Upload API                               │
-│         - Container Orchestration                       │
-└─────────────────────┬───────────────────────────────────┘
-                      │ Docker API
-                      ▼
-┌─────────────────────────────────────────────────────────┐
-│           Docker Containers (per session)               │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │  Ubuntu 24.04 + ttyd                             │   │
-│  │  - Vibe CLI installed                            │   │
-│  │  - Connected to host Ollama (172.17.0.1:11434)   │   │
-│  │  - Workspace at /home/vibe/workspace             │   │
-│  └──────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
+└──────────────┬────────────────────┬─────────────────────┘
+               │ :8080              │ :17000+
+               ▼                    ▼
+┌──────────────────────┐  ┌────────────────────────────────┐
+│  FastAPI Server      │  │  Docker Container (per user)   │
+│  (Python on HOST)    │  │  ┌──────────────────────────┐  │
+│                      │  │  │ ttyd → bash              │  │
+│  - Serves web UI     │  │  │ Vibe CLI installed       │  │
+│  - Creates containers│  │  │ Workspace mounted        │  │
+│  - Manages sessions  │  │  └──────────────────────────┘  │
+│  - File upload API   │  │                                │
+└──────────────────────┘  └───────────────┬────────────────┘
+        │                                 │
+        │ Docker API                      │ 172.17.0.1:11434
+        ▼                                 ▼
+┌──────────────────────────────────────────────────────────┐
+│                     HOST MACHINE                         │
+│  - Docker daemon                                         │
+│  - Ollama (must listen on 0.0.0.0:11434)                │
+│  - Workspaces at /tmp/vibe-workspaces/                  │
+└──────────────────────────────────────────────────────────┘
 ```
+
+**Key points:**
+- FastAPI server runs on the **host** (not in Docker), manages everything
+- Each user gets their own Docker container with ttyd terminal
+- Containers access host's Ollama via Docker bridge IP (172.17.0.1)
+- Workspaces are mounted from host into containers
 
 ## Requirements
 
 - Docker
 - Python 3.10+
-- Ollama Load Balancer running at 172.17.0.1:11434
+- Ollama running and accessible from Docker containers (see Networking section)
 
 ## Installing Docker (Ubuntu/Debian)
 
@@ -154,6 +160,41 @@ cpu_quota=100000,    # CPU limit (100000 = 1 CPU)
 - The "password" for sudo is publicly known
 - Consider adding authentication for production use
 - Network access from containers is limited but not fully isolated
+
+## Networking: Ollama Access from Containers
+
+Docker containers cannot reach `127.0.0.1` on the host. They access the host via the Docker bridge IP: `172.17.0.1`.
+
+### Option A: Direct Ollama Access (Simplest)
+
+Start Ollama to listen on all interfaces:
+
+```bash
+OLLAMA_HOST=0.0.0.0:11434 ollama serve
+```
+
+Containers will connect to `http://172.17.0.1:11434/v1`.
+
+### Option B: With Ollama Load Balancer
+
+If using the load balancer, it must also listen on all interfaces. Modify its source to bind to `0.0.0.0:11434` instead of `127.0.0.1:11434`, then:
+
+```bash
+# Load balancer forwards to real Ollama
+./ollama_load_balancer --server "http://172.17.0.1:11434=RTX5090" --timeout 120
+```
+
+### Verify Connectivity
+
+From the host, test if containers can reach Ollama:
+
+```bash
+# Check what's listening
+ss -tlnp | grep 11434
+
+# Test from a container
+docker run --rm curlimages/curl curl -s http://172.17.0.1:11434/v1/models
+```
 
 ## Troubleshooting
 

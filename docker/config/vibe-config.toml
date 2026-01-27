@@ -1,13 +1,18 @@
 # Vibe CLI configuration for Docker container
-# Connects to host's Ollama Load Balancer via Docker bridge
+# Connects to host's Ollama via Docker bridge network
+#
+# IMPORTANT: For this to work, Ollama must be listening on 0.0.0.0:11434
+# (not just 127.0.0.1). Containers reach the host at 172.17.0.1.
+#
+# If using Ollama Load Balancer, it must also listen on 0.0.0.0:11434
 
 active_model = "devstral-local"
 auto_compact_threshold = 95000
+api_timeout = 720.0
 
 [[providers]]
 name = "ollama-docker0"
-# Docker containers can reach host at 172.17.0.1 (docker0 bridge)
-# Or use host.docker.internal on some systems
+# 172.17.0.1 is the Docker bridge IP - how containers reach the host
 api_base = "http://172.17.0.1:11434/v1"
 api_key_env_var = "OLLAMA_API_KEY"
 api_style = "openai"
