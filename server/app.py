@@ -25,6 +25,15 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+# =============================================================================
+# SECURITY CONFIGURATION - DO NOT CHANGE
+# =============================================================================
+# This server MUST only bind to localhost (127.0.0.1).
+# It provides unauthenticated shell access - NEVER expose to the internet!
+# =============================================================================
+SERVER_HOST = "127.0.0.1"  # SECURITY: localhost only - DO NOT CHANGE TO 0.0.0.0
+SERVER_PORT = 8080
+
 # Configuration
 DOCKER_IMAGE = "vibe-terminal:latest"
 CONTAINER_PREFIX = "vibe-session-"
@@ -396,4 +405,25 @@ async def list_sessions():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8080)
+    import sys
+
+    # ==========================================================================
+    # SECURITY CHECK - Prevent accidental exposure to the internet
+    # ==========================================================================
+    ALLOWED_HOSTS = ("127.0.0.1", "localhost")
+
+    if SERVER_HOST not in ALLOWED_HOSTS:
+        print("=" * 70)
+        print("SECURITY ERROR: Refusing to start!")
+        print("=" * 70)
+        print(f"SERVER_HOST is set to '{SERVER_HOST}'")
+        print()
+        print("This server provides UNAUTHENTICATED SHELL ACCESS.")
+        print("It MUST only bind to localhost (127.0.0.1).")
+        print()
+        print("Binding to 0.0.0.0 or a public IP would expose shell access")
+        print("to anyone on the network or internet!")
+        print("=" * 70)
+        sys.exit(1)
+
+    uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT)

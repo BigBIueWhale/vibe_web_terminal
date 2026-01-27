@@ -10,17 +10,15 @@ if [ ! -d "venv" ]; then
     ./setup.sh
 fi
 
-# Get the local IP for display
-LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
-
 echo ""
 echo "============================================"
 echo "  Vibe Web Terminal"
 echo "============================================"
 echo ""
-echo "Server starting on:"
-echo "  - Local:   http://localhost:8080"
-echo "  - Network: http://${LOCAL_IP}:8080"
+echo "Server starting on: http://localhost:8080"
+echo ""
+echo "SECURITY: Bound to localhost only (127.0.0.1)"
+echo "          NOT accessible from the network/internet"
 echo ""
 echo "Press Ctrl+C to stop"
 echo ""

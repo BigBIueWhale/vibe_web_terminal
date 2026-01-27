@@ -86,7 +86,7 @@ cd /path/to/vibe-web-terminal
 ./run.sh
 ```
 
-Then open http://localhost:8080 (or your server's IP on port 8080).
+Then open http://localhost:8080 (only accessible from this machine).
 
 ## Offline / Internal Network Deployment
 
@@ -192,11 +192,18 @@ cpu_quota=100000,    # CPU limit (100000 = 1 CPU)
 
 ## Security Considerations
 
-⚠️ **This is designed for trusted local network use.**
+⚠️ **IMPORTANT: This server provides UNAUTHENTICATED SHELL ACCESS**
 
+**By design, the server ONLY binds to localhost (127.0.0.1):**
+- It is NOT accessible from other machines on your network
+- It is NOT accessible from the internet
+- Only users logged into this machine can access it
+
+**The server will REFUSE to start if configured to bind to 0.0.0.0 or any public IP.**
+
+Additional security notes:
 - Containers have limited resources but can still run arbitrary code
-- The "password" for sudo is publicly known
-- Consider adding authentication for production use
+- The "password" for sudo is publicly known ("password")
 - Network access from containers is limited but not fully isolated
 
 ## Networking: Ollama Load Balancer Setup
