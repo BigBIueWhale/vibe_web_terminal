@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terminal - {{ session_id[:8] }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            background: #2d2d2d;
+            padding: 0.5rem 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #444;
+            flex-shrink: 0;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .logo {
+            font-weight: bold;
+            font-size: 1.1rem;
+            color: #00d4ff;
+        }
+
+        .session-info {
+            font-size: 0.85rem;
+            color: #888;
+        }
+
+        .session-id {
+            font-family: monospace;
+            background: #3d3d3d;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .session-id:hover {
+            background: #4d4d4d;
+        }
+
+        .header-right {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .btn {
+            background: #3d3d3d;
+            border: none;
+            color: #e0e0e0;
+            padding: 0.4rem 0.8rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: background 0.2s;
+        }
+
+        .btn:hover {
+            background: #4d4d4d;
+        }
+
+        .btn-upload {
+            background: #7c3aed;
+        }
+
+        .btn-upload:hover {
+            background: #8b5cf6;
+        }
+
+        .terminal-container {
+            flex: 1;
+            position: relative;
+        }
+
+        .terminal-iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: #1a1a1a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .loading-overlay.hidden {
+            display: none;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #3d3d3d;
+            border-top-color: #00d4ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Upload modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .modal.show {
+            display: flex;
+        }
+
+        .modal-content {
+            background: #2d2d2d;
+            padding: 2rem;
+            border-radius: 12px;
+            min-width: 500px;
+            max-width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+        }
+
+        .modal-header h2 {
+            font-size: 1.2rem;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: #888;
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+
+        .upload-options {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .upload-zone {
+            flex: 1;
+            border: 2px dashed #444;
+            border-radius: 8px;
+            padding: 1.5rem;
+            text-align: center;
+            transition: border-color 0.2s, background 0.2s;
+            cursor: pointer;
+        }
+
+        .upload-zone:hover,
+        .upload-zone.dragover {
+            border-color: #7c3aed;
+            background: rgba(124, 58, 237, 0.1);
+        }
+
+        .upload-zone input {
+            display: none;
+        }
+
+        .upload-zone label {
+            cursor: pointer;
+            display: block;
+        }
+
+        .upload-zone .icon {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .upload-zone .text {
+            font-size: 0.9rem;
+        }
+
+        .upload-progress {
+            margin-top: 1rem;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .progress-item {
+            background: #3d3d3d;
+            border-radius: 4px;
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 0.5rem;
+            font-size: 0.85rem;
+        }
+
+        .progress-filename {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 300px;
+        }
+
+        .progress-bar-container {
+            background: #2d2d2d;
+            border-radius: 4px;
+            height: 6px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #7c3aed, #00d4ff);
+            transition: width 0.2s;
+            border-radius: 4px;
+        }
+
+        .progress-bar.complete {
+            background: #4ade80;
+        }
+
+        .progress-bar.error {
+            background: #f87171;
+        }
+
+        .file-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 0.75rem;
+            background: #3d3d3d;
+            border-radius: 4px;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+
+        .file-item-name {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            overflow: hidden;
+        }
+
+        .file-item-name span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .file-size {
+            color: #888;
+            flex-shrink: 0;
+            margin-left: 1rem;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #4ade80;
+            color: #1a1a1a;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            font-weight: 500;
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.3s;
+            z-index: 2000;
+        }
+
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+
+        .toast.error {
+            background: #f87171;
+        }
+
+        .help-text {
+            font-size: 0.8rem;
+            color: #888;
+            margin-top: 0.5rem;
+        }
+
+        .upload-stats {
+            display: flex;
+            gap: 2rem;
+            margin-top: 1rem;
+            padding: 0.75rem;
+            background: #3d3d3d;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
+
+        .stat {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .stat-label {
+            color: #888;
+            font-size: 0.75rem;
+        }
+
+        .stat-value {
+            font-weight: 600;
+            color: #00d4ff;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-left">
+            <span class="logo">Vibe Terminal</span>
+            <div class="session-info">
+                Session: <span class="session-id" onclick="copySessionId()" title="Click to copy full URL">{{ session_id }}</span>
+            </div>
+        </div>
+        <div class="header-right">
+            <button class="btn" onclick="showFiles()">Files</button>
+            <button class="btn btn-upload" onclick="showUpload()">Upload</button>
+            <button class="btn" onclick="newSession()">New Session</button>
+        </div>
+    </div>
+
+    <div class="terminal-container">
+        <div class="loading-overlay" id="loadingOverlay">
+            <div class="spinner"></div>
+            <p>Connecting to terminal...</p>
+        </div>
+        <iframe
+            id="terminalFrame"
+            class="terminal-iframe"
+            src="http://{{ request.headers.get('host', 'localhost').split(':')[0] }}:{{ ttyd_port }}/"
+            onload="hideLoading()"
+        ></iframe>
+    </div>
+
+    <!-- Upload Modal -->
+    <div class="modal" id="uploadModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Upload Files & Folders</h2>
+                <button class="modal-close" onclick="hideUpload()">&times;</button>
+            </div>
+
+            <div class="upload-options">
+                <div class="upload-zone" id="uploadZoneFiles">
+                    <input type="file" id="fileInput" multiple onchange="handleFileSelect(this.files)">
+                    <label for="fileInput">
+                        <div class="icon">📄</div>
+                        <div class="text">Drop files or click</div>
+                    </label>
+                </div>
+                <div class="upload-zone" id="uploadZoneFolder">
+                    <input type="file" id="folderInput" webkitdirectory directory multiple onchange="handleFolderSelect(this.files)">
+                    <label for="folderInput">
+                        <div class="icon">📁</div>
+                        <div class="text">Upload folder</div>
+                    </label>
+                </div>
+            </div>
+
+            <p class="help-text">Files upload to /home/vibe/workspace/ • Folders preserve structure • Max 500MB per file</p>
+
+            <div class="upload-stats" id="uploadStats" style="display: none;">
+                <div class="stat">
+                    <span class="stat-label">Files</span>
+                    <span class="stat-value" id="statFiles">0 / 0</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Size</span>
+                    <span class="stat-value" id="statSize">0 B</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Speed</span>
+                    <span class="stat-value" id="statSpeed">-- MB/s</span>
+                </div>
+            </div>
+
+            <div class="upload-progress" id="uploadProgress"></div>
+        </div>
+    </div>
+
+    <!-- Files Modal -->
+    <div class="modal" id="filesModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Workspace Files</h2>
+                <button class="modal-close" onclick="hideFiles()">&times;</button>
+            </div>
+            <div class="file-list" id="workspaceFiles">
+                <p style="color: #888; text-align: center;">Loading...</p>
+            </div>
+            <p class="help-text">Path: /home/vibe/workspace/</p>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        const sessionId = "{{ session_id }}";
+        let uploadQueue = [];
+        let uploadStats = { completed: 0, total: 0, bytes: 0, startTime: 0 };
+
+        function hideLoading() {
+            document.getElementById('loadingOverlay').classList.add('hidden');
+        }
+
+        function copySessionId() {
+            navigator.clipboard.writeText(window.location.href);
+            showToast('Session URL copied to clipboard!');
+        }
+
+        function showToast(message, isError = false) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast show' + (isError ? ' error' : '');
+            setTimeout(() => toast.classList.remove('show'), 3000);
+        }
+
+        function showUpload() {
+            document.getElementById('uploadModal').classList.add('show');
+        }
+
+        function hideUpload() {
+            document.getElementById('uploadModal').classList.remove('show');
+        }
+
+        function showFiles() {
+            document.getElementById('filesModal').classList.add('show');
+            loadFiles();
+        }
+
+        function hideFiles() {
+            document.getElementById('filesModal').classList.remove('show');
+        }
+
+        async function loadFiles() {
+            const container = document.getElementById('workspaceFiles');
+            try {
+                const response = await fetch(`/session/${sessionId}/files`);
+                const data = await response.json();
+
+                if (data.files.length === 0) {
+                    container.innerHTML = '<p style="color: #888; text-align: center;">No files yet</p>';
+                } else {
+                    container.innerHTML = data.files.map(f => `
+                        <div class="file-item">
+                            <div class="file-item-name">
+                                <span>${f.is_dir ? '📁' : '📄'}</span>
+                                <span>${f.name}</span>
+                            </div>
+                            <span class="file-size">${formatSize(f.size)}</span>
+                        </div>
+                    `).join('');
+                }
+            } catch (e) {
+                container.innerHTML = '<p style="color: #f87171;">Failed to load files</p>';
+            }
+        }
+
+        function formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+            return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+        }
+
+        function handleFileSelect(files) {
+            uploadFilesWithProgress(Array.from(files), '');
+        }
+
+        function handleFolderSelect(files) {
+            // Files from folder upload have webkitRelativePath
+            const fileList = Array.from(files);
+            uploadFilesWithProgress(fileList, '');
+        }
+
+        async function uploadFilesWithProgress(files, basePath) {
+            const progressContainer = document.getElementById('uploadProgress');
+            const statsContainer = document.getElementById('uploadStats');
+
+            uploadStats = {
+                completed: 0,
+                total: files.length,
+                bytes: 0,
+                totalBytes: files.reduce((sum, f) => sum + f.size, 0),
+                startTime: Date.now()
+            };
+
+            statsContainer.style.display = 'flex';
+            updateStats();
+
+            for (const file of files) {
+                // Get relative path for folder uploads
+                const relativePath = file.webkitRelativePath || file.name;
+                const displayName = relativePath.length > 40
+                    ? '...' + relativePath.slice(-37)
+                    : relativePath;
+
+                // Create progress element
+                const progressId = 'progress-' + Math.random().toString(36).substr(2, 9);
+                progressContainer.insertAdjacentHTML('afterbegin', `
+                    <div class="progress-item" id="${progressId}">
+                        <div class="progress-header">
+                            <span class="progress-filename" title="${relativePath}">${displayName}</span>
+                            <span class="progress-status">0%</span>
+                        </div>
+                        <div class="progress-bar-container">
+                            <div class="progress-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                `);
+
+                try {
+                    await uploadFileWithProgress(file, relativePath, progressId);
+                    uploadStats.completed++;
+                    uploadStats.bytes += file.size;
+                    updateStats();
+                } catch (e) {
+                    const elem = document.getElementById(progressId);
+                    if (elem) {
+                        elem.querySelector('.progress-bar').className = 'progress-bar error';
+                        elem.querySelector('.progress-status').textContent = 'Failed';
+                    }
+                    showToast(`Failed: ${file.name}`, true);
+                }
+            }
+
+            if (uploadStats.completed === uploadStats.total) {
+                showToast(`Uploaded ${uploadStats.completed} file(s)`);
+            }
+        }
+
+        async function uploadFileWithProgress(file, relativePath, progressId) {
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('path', relativePath);
+
+                xhr.upload.onprogress = (e) => {
+                    if (e.lengthComputable) {
+                        const percent = Math.round((e.loaded / e.total) * 100);
+                        const elem = document.getElementById(progressId);
+                        if (elem) {
+                            elem.querySelector('.progress-bar').style.width = percent + '%';
+                            elem.querySelector('.progress-status').textContent = percent + '%';
+                        }
+                    }
+                };
+
+                xhr.onload = () => {
+                    const elem = document.getElementById(progressId);
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        if (elem) {
+                            elem.querySelector('.progress-bar').className = 'progress-bar complete';
+                            elem.querySelector('.progress-bar').style.width = '100%';
+                            elem.querySelector('.progress-status').textContent = '✓';
+                        }
+                        resolve();
+                    } else {
+                        reject(new Error(xhr.statusText));
+                    }
+                };
+
+                xhr.onerror = () => reject(new Error('Network error'));
+
+                xhr.open('POST', `/session/${sessionId}/upload`);
+                xhr.send(formData);
+            });
+        }
+
+        function updateStats() {
+            document.getElementById('statFiles').textContent =
+                `${uploadStats.completed} / ${uploadStats.total}`;
+            document.getElementById('statSize').textContent =
+                formatSize(uploadStats.bytes) + ' / ' + formatSize(uploadStats.totalBytes);
+
+            const elapsed = (Date.now() - uploadStats.startTime) / 1000;
+            if (elapsed > 0.5 && uploadStats.bytes > 0) {
+                const speed = uploadStats.bytes / elapsed;
+                document.getElementById('statSpeed').textContent =
+                    formatSize(speed) + '/s';
+            }
+        }
+
+        function newSession() {
+            window.location.href = '/';
+        }
+
+        // Drag and drop for files
+        ['uploadZoneFiles', 'uploadZoneFolder'].forEach(id => {
+            const zone = document.getElementById(id);
+
+            zone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                zone.classList.add('dragover');
+            });
+
+            zone.addEventListener('dragleave', () => {
+                zone.classList.remove('dragover');
+            });
+
+            zone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                zone.classList.remove('dragover');
+
+                // Handle both files and folders via DataTransferItemList
+                const items = e.dataTransfer.items;
+                if (items) {
+                    const files = [];
+                    const promises = [];
+
+                    for (let i = 0; i < items.length; i++) {
+                        const item = items[i].webkitGetAsEntry();
+                        if (item) {
+                            promises.push(traverseFileTree(item, '', files));
+                        }
+                    }
+
+                    Promise.all(promises).then(() => {
+                        if (files.length > 0) {
+                            uploadFilesWithProgress(files, '');
+                        }
+                    });
+                } else {
+                    handleFileSelect(e.dataTransfer.files);
+                }
+            });
+        });
+
+        // Recursively traverse folder structure
+        function traverseFileTree(item, path, files) {
+            return new Promise((resolve) => {
+                if (item.isFile) {
+                    item.file((file) => {
+                        // Add relative path to file object
+                        Object.defineProperty(file, 'webkitRelativePath', {
+                            value: path + file.name
+                        });
+                        files.push(file);
+                        resolve();
+                    });
+                } else if (item.isDirectory) {
+                    const dirReader = item.createReader();
+                    dirReader.readEntries((entries) => {
+                        const promises = entries.map(entry =>
+                            traverseFileTree(entry, path + item.name + '/', files)
+                        );
+                        Promise.all(promises).then(resolve);
+                    });
+                } else {
+                    resolve();
+                }
+            });
+        }
+
+        // Close modals on escape
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                hideUpload();
+                hideFiles();
+            }
+        });
+
+        // Close modals when clicking outside
+        document.querySelectorAll('.modal').forEach(modal => {
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    modal.classList.remove('show');
+                }
+            });
+        });
+    </script>
+</body>
+</html>
