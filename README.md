@@ -9,7 +9,7 @@ A web-based terminal service that provides full Linux terminals with Mistral Vib
 - **Isolated Sessions** - Each user gets their own Docker container
 - **File Upload** - Upload files to your workspace via the web UI
 - **Session Persistence** - Return to your session anytime using the URL
-- **Auto Cleanup** - Old sessions are automatically cleaned up after 24 hours
+- **Persistent Sessions** - Containers persist until PC restart (workspaces in /tmp)
 
 ## Architecture
 
@@ -117,12 +117,12 @@ Edit `server/app.py`, change the port in the last line:
 uvicorn.run(app, host="0.0.0.0", port=8080)
 ```
 
-### Session Timeout
+### Session Lifetime
 
-In `server/app.py`:
-```python
-SESSION_TIMEOUT_HOURS = 24  # Change to desired hours
-```
+Sessions persist until PC restart:
+- Containers stay running until manually stopped or PC reboots
+- Workspaces are in `/tmp/vibe-workspaces/` (cleared on reboot)
+- Use `./stop.sh` to manually clean up all containers
 
 ### Ollama Server
 

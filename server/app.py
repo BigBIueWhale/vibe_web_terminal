@@ -28,11 +28,13 @@ from fastapi.templating import Jinja2Templates
 # Configuration
 DOCKER_IMAGE = "vibe-terminal:latest"
 CONTAINER_PREFIX = "vibe-session-"
-SESSION_TIMEOUT_HOURS = 24
-CLEANUP_INTERVAL_SECONDS = 300  # 5 minutes
+# No automatic cleanup - containers persist until PC restart
+# Users can manually delete via DELETE /session/{id} or ./stop.sh
+SESSION_TIMEOUT_HOURS = None  # Disabled
+CLEANUP_INTERVAL_SECONDS = 300  # 5 minutes (only cleans up stopped containers)
 HOST_PORT_START = 17000
 HOST_PORT_END = 18000
-WORKSPACE_BASE = Path("/tmp/vibe-workspaces")
+WORKSPACE_BASE = Path("/tmp/vibe-workspaces")  # /tmp is cleared on reboot
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -153,33 +155,23 @@ async def get_or_create_session(session_id: str) -> dict:
 
 
 async def cleanup_old_sessions():
-    """Clean up sessions older than SESSION_TIMEOUT_HOURS."""
+    """Clean up stopped/dead containers. No time-based expiry - containers persist until reboot."""
     while True:
         try:
-            now = datetime.now()
-            expired = []
-
+            # Only clean up containers that have stopped/died (not time-based)
             for session_id, session in list(sessions.items()):
-                last_accessed = datetime.fromisoformat(session["last_accessed"])
-                if now - last_accessed > timedelta(hours=SESSION_TIMEOUT_HOURS):
-                    expired.append(session_id)
-
-            for session_id in expired:
-                session = sessions.pop(session_id, None)
-                if session:
-                    try:
-                        container = docker_client.containers.get(session["container_name"])
+                try:
+                    container = docker_client.containers.get(session["container_name"])
+                    if container.status in ("exited", "dead"):
+                        # Container stopped - clean up
+                        sessions.pop(session_id, None)
                         container.remove(force=True)
-                        logger.info(f"Cleaned up expired session {session_id}")
-                    except docker.errors.NotFound:
-                        pass
-                    release_port(session["port"])
-
-                    # Clean up workspace
-                    workspace = Path(session["workspace"])
-                    if workspace.exists():
-                        import shutil
-                        shutil.rmtree(workspace, ignore_errors=True)
+                        release_port(session["port"])
+                        logger.info(f"Cleaned up stopped container for session {session_id}")
+                except docker.errors.NotFound:
+                    # Container gone - clean up session
+                    sessions.pop(session_id, None)
+                    release_port(session.get("port", 0))
 
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
