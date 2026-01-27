@@ -34,8 +34,8 @@ A web-based terminal service that provides full Linux terminals with Mistral Vib
 ┌──────────────────────────────────────────────────────────┐
 │                     HOST MACHINE                         │
 │  - Docker daemon                                         │
-│  - Ollama (must listen on 0.0.0.0:11434)                │
-│  - Workspaces at /tmp/vibe-workspaces/                  │
+│  - Ollama (must listen on 0.0.0.0:11434)                 │
+│  - Workspaces at /tmp/vibe-workspaces/                   │
 └──────────────────────────────────────────────────────────┘
 ```
 
