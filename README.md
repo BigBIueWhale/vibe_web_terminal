@@ -161,35 +161,33 @@ cpu_quota=100000,    # CPU limit (100000 = 1 CPU)
 - Consider adding authentication for production use
 - Network access from containers is limited but not fully isolated
 
-## Networking: Ollama Access from Containers
+## Networking: Ollama Load Balancer Setup
+
+Vibe CLI inside containers connects to **Ollama Load Balancer**, not directly to Ollama.
 
 Docker containers cannot reach `127.0.0.1` on the host. They access the host via the Docker bridge IP: `172.17.0.1`.
 
-### Option A: Direct Ollama Access (Simplest)
+### Required Setup
 
-Start Ollama to listen on all interfaces:
+1. **Real Ollama** listens on `172.17.0.1:11434` (already the case if using the standard setup)
 
-```bash
-OLLAMA_HOST=0.0.0.0:11434 ollama serve
-```
+2. **Ollama Load Balancer** must listen on `172.17.0.1:11434` (docker0 interface):
 
-Containers will connect to `http://172.17.0.1:11434/v1`.
+   Modify `main.rs` in ollama_load_balancer to bind to `172.17.0.1:11434` instead of `127.0.0.1:11434`, then run:
 
-### Option B: With Ollama Load Balancer
+   ```bash
+   cd /home/user/Desktop/ollama_load_balancer
+   ./target/release/ollama_load_balancer --server "http://172.17.0.1:11434=RTX5090 Server" --timeout 120
+   ```
 
-If using the load balancer, it must also listen on all interfaces. Modify its source to bind to `0.0.0.0:11434` instead of `127.0.0.1:11434`, then:
+   **Note:** Do NOT use `0.0.0.0` - that's insecure. Only bind to docker0 (`172.17.0.1`).
 
-```bash
-# Load balancer forwards to real Ollama
-./ollama_load_balancer --server "http://172.17.0.1:11434=RTX5090" --timeout 120
-```
+3. **Containers** connect to Load Balancer at `http://172.17.0.1:11434/v1`
 
 ### Verify Connectivity
 
-From the host, test if containers can reach Ollama:
-
 ```bash
-# Check what's listening
+# Check Load Balancer is listening on docker0
 ss -tlnp | grep 11434
 
 # Test from a container
