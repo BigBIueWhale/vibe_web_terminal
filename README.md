@@ -34,7 +34,7 @@ A web-based terminal service that provides full Linux terminals with Mistral Vib
 ┌──────────────────────────────────────────────────────────┐
 │                     HOST MACHINE                         │
 │  - Docker daemon                                         │
-│  - Ollama (must listen on 0.0.0.0:11434)                 │
+│  - Ollama (must listen on 127.0.0.1:11434)               │
 │  - Workspaces at /tmp/vibe-workspaces/                   │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -152,7 +152,7 @@ vibe-web-terminal/
 
 Edit `server/app.py`, change the port in the last line:
 ```python
-uvicorn.run(app, host="0.0.0.0", port=8080)
+uvicorn.run(app, host="127.0.0.1", port=8080)
 ```
 
 ### Session Lifetime

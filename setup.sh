@@ -136,7 +136,7 @@ if [ ! -f "run.sh" ]; then
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 source venv/bin/activate
-echo "Starting Vibe Web Terminal on http://0.0.0.0:8080"
+echo "Starting Vibe Web Terminal on http://127.0.0.1:8080"
 echo "Press Ctrl+C to stop"
 python server/app.py
 RUNEOF
