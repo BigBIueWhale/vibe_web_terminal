@@ -363,15 +363,22 @@ async def websocket_proxy(request: web.Request) -> web.WebSocketResponse:
     ws_server = web.WebSocketResponse(protocols=protocols or None)
     await ws_server.prepare(request)
 
-    # Connect to upstream WebSocket
+    # Connect to upstream WebSocket, forwarding cookies and relevant headers
     target_url = f"http://{UPSTREAM_HOST}:{UPSTREAM_PORT}{request.path_qs}"
     ws_url = target_url.replace("http://", "ws://")
+
+    # Forward headers that the upstream may need (especially Cookie for auth)
+    upstream_headers = {}
+    for key, value in request.headers.items():
+        if key.lower() in ("cookie", "authorization"):
+            upstream_headers[key] = value
 
     try:
         session = await get_client_session()
         async with session.ws_connect(
             ws_url,
             protocols=protocols or None,
+            headers=upstream_headers,
         ) as ws_upstream:
 
             async def forward_to_upstream():
