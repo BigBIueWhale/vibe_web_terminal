@@ -88,6 +88,11 @@ RUN echo 'export PS1="\[\033[1;32m\]\u@vibe-terminal\[\033[0m\]:\[\033[1;34m\]\w
     && echo '# Welcome message' >> /home/vibe/.bashrc \
     && echo 'echo ""' >> /home/vibe/.bashrc \
     && echo 'echo "Welcome to Vibe Terminal!"' >> /home/vibe/.bashrc \
+    && echo 'echo ""' >> /home/vibe/.bashrc \
+    && echo 'echo "Copy tips:"' >> /home/vibe/.bashrc \
+    && echo 'echo "  Select text                  Copy to clipboard"' >> /home/vibe/.bashrc \
+    && echo 'echo "  Shift + Select (in vibe)     Select text in mouse-enabled apps"' >> /home/vibe/.bashrc \
+    && echo 'echo ""' >> /home/vibe/.bashrc \
     && echo 'echo "- Type \"vibe\" to start Mistral Vibe CLI"' >> /home/vibe/.bashrc \
     && echo 'echo "- Your workspace is /home/vibe/workspace"' >> /home/vibe/.bashrc \
     && echo 'echo "- Password for sudo: password"' >> /home/vibe/.bashrc \
