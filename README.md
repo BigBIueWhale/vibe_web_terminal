@@ -17,7 +17,7 @@ A web-based terminal service that provides full Linux terminals with Mistral Vib
 ┌─────────────────────────────────────────────────────────┐
 │                    Web Browser                          │
 └──────────────┬────────────────────┬─────────────────────┘
-               │ :8080              │ :17000+
+               │ :8081              │ :17000+
                ▼                    ▼
 ┌──────────────────────┐  ┌────────────────────────────────┐
 │  FastAPI Server      │  │  Docker Container (per user)   │
@@ -86,7 +86,7 @@ cd /path/to/vibe-web-terminal
 ./run.sh
 ```
 
-Then open http://localhost:8080 (only accessible from this machine).
+Then open http://127.0.0.1:8081 (only accessible from this machine).
 
 ## Offline / Internal Network Deployment
 

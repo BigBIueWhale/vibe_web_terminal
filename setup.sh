@@ -136,7 +136,7 @@ if [ ! -f "run.sh" ]; then
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 source venv/bin/activate
-echo "Starting Vibe Web Terminal on http://127.0.0.1:8080"
+echo "Starting Vibe Web Terminal on http://127.0.0.1:8081"
 echo "Press Ctrl+C to stop"
 python server/app.py
 RUNEOF
@@ -151,7 +151,7 @@ echo ""
 echo "To start the server:"
 echo "  ./run.sh"
 echo ""
-echo "Then open: http://localhost:8080"
+echo "Then open: http://127.0.0.1:8081"
 echo ""
 echo "SECURITY: Server binds to localhost only (127.0.0.1)"
 echo "          NOT accessible from the network/internet"

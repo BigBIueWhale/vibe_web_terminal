@@ -19,10 +19,12 @@ from typing import Optional
 
 import aiofiles
 import docker
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse
+import httpx
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.websockets import WebSocketState
 
 # =============================================================================
 # SECURITY CONFIGURATION - DO NOT CHANGE
@@ -31,7 +33,7 @@ from fastapi.templating import Jinja2Templates
 # It provides unauthenticated shell access - NEVER expose to the internet!
 # =============================================================================
 SERVER_HOST = "127.0.0.1"  # SECURITY: localhost only - DO NOT CHANGE TO 0.0.0.0
-SERVER_PORT = 8080
+SERVER_PORT = 8081
 
 # Configuration
 DOCKER_IMAGE = "vibe-terminal:latest"
@@ -110,11 +112,12 @@ async def create_container(session_id: str) -> dict:
             pass
 
         # Create new container
+        # Bind ttyd port to localhost only - all external access goes through our proxy
         container = docker_client.containers.run(
             DOCKER_IMAGE,
             name=container_name,
             detach=True,
-            ports={"7681/tcp": port},
+            ports={"7681/tcp": ("127.0.0.1", port)},
             volumes={
                 str(workspace_dir): {"bind": "/home/vibe/workspace", "mode": "rw"}
             },
@@ -201,6 +204,7 @@ async def cleanup_old_sessions():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
+    global _http_client
     # Startup
     WORKSPACE_BASE.mkdir(parents=True, exist_ok=True)
     cleanup_task = asyncio.create_task(cleanup_old_sessions())
@@ -210,7 +214,15 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     cleanup_task.cancel()
+    # Close HTTP client used for proxying
+    if _http_client is not None:
+        await _http_client.aclose()
+        _http_client = None
     logger.info("Vibe Web Terminal server stopped")
+
+
+# Forward declaration for HTTP client (used by proxy)
+_http_client: Optional[httpx.AsyncClient] = None
 
 
 # FastAPI app
@@ -558,6 +570,166 @@ async def list_sessions():
         })
 
     return {"sessions": result}
+
+
+# =============================================================================
+# WEBSOCKET AND HTTP PROXY FOR TTYD
+# =============================================================================
+# All browser connections now go through port 8080 - no direct port access needed
+# This provides a single entry point and better security
+# =============================================================================
+
+async def get_http_client() -> httpx.AsyncClient:
+    """Get or create the shared HTTP client."""
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(timeout=30.0)
+    return _http_client
+
+
+def get_session_port(session_id: str) -> Optional[int]:
+    """Get the ttyd port for a session, or None if not found."""
+    session = sessions.get(session_id)
+    if session:
+        session["last_accessed"] = datetime.now().isoformat()
+        return session["port"]
+    return None
+
+
+@app.websocket("/ttyd/{session_id}/ws")
+async def websocket_proxy(websocket: WebSocket, session_id: str):
+    """
+    WebSocket proxy for ttyd terminal connections.
+
+    Proxies WebSocket traffic between browser and ttyd, enabling:
+    - Single port entry (8080) for all connections
+    - Connection monitoring and heartbeat
+    - Graceful reconnection handling
+    """
+    port = get_session_port(session_id)
+    if port is None:
+        await websocket.close(code=4004, reason="Session not found")
+        return
+
+    # Accept with 'tty' subprotocol - required by ttyd
+    await websocket.accept(subprotocol="tty")
+    logger.info(f"WebSocket proxy started for session {session_id} -> port {port}")
+
+    # Connect to ttyd's WebSocket
+    ttyd_ws = None
+    try:
+        import websockets
+        ttyd_url = f"ws://127.0.0.1:{port}/ws"
+
+        async with websockets.connect(
+            ttyd_url,
+            subprotocols=["tty"],  # Required by ttyd
+            ping_interval=20,  # Send ping every 20 seconds
+            ping_timeout=20,   # Wait 20 seconds for pong
+            close_timeout=5,   # 5 second close timeout
+        ) as ttyd_ws:
+
+            async def forward_to_ttyd():
+                """Forward messages from browser to ttyd."""
+                try:
+                    while True:
+                        if websocket.client_state != WebSocketState.CONNECTED:
+                            break
+                        data = await websocket.receive()
+                        if data["type"] == "websocket.receive":
+                            if "bytes" in data:
+                                await ttyd_ws.send(data["bytes"])
+                            elif "text" in data:
+                                await ttyd_ws.send(data["text"])
+                        elif data["type"] == "websocket.disconnect":
+                            break
+                except WebSocketDisconnect:
+                    pass
+                except Exception as e:
+                    logger.debug(f"Forward to ttyd ended: {e}")
+
+            async def forward_to_browser():
+                """Forward messages from ttyd to browser."""
+                try:
+                    async for message in ttyd_ws:
+                        if websocket.client_state != WebSocketState.CONNECTED:
+                            break
+                        if isinstance(message, bytes):
+                            await websocket.send_bytes(message)
+                        else:
+                            await websocket.send_text(message)
+                except Exception as e:
+                    logger.debug(f"Forward to browser ended: {e}")
+
+            # Run both directions concurrently
+            await asyncio.gather(
+                forward_to_ttyd(),
+                forward_to_browser(),
+                return_exceptions=True
+            )
+
+    except websockets.exceptions.ConnectionClosed as e:
+        logger.info(f"ttyd WebSocket closed for session {session_id}: {e}")
+    except Exception as e:
+        logger.error(f"WebSocket proxy error for session {session_id}: {e}")
+    finally:
+        # Clean up
+        if websocket.client_state == WebSocketState.CONNECTED:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+        logger.info(f"WebSocket proxy ended for session {session_id}")
+
+
+@app.get("/ttyd/{session_id}/{path:path}")
+@app.get("/ttyd/{session_id}")
+async def http_proxy(request: Request, session_id: str, path: str = ""):
+    """
+    HTTP proxy for ttyd static content (HTML, JS, CSS).
+
+    Proxies HTTP requests to ttyd, enabling all traffic through port 8080.
+    """
+    port = get_session_port(session_id)
+    if port is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Build the target URL
+    target_url = f"http://127.0.0.1:{port}/{path}"
+    if request.url.query:
+        target_url += f"?{request.url.query}"
+
+    try:
+        client = await get_http_client()
+
+        # Forward the request with appropriate headers
+        headers = {}
+        for key, value in request.headers.items():
+            # Skip hop-by-hop headers
+            if key.lower() not in ('host', 'connection', 'keep-alive', 'transfer-encoding',
+                                   'upgrade', 'proxy-connection', 'proxy-authenticate',
+                                   'proxy-authorization', 'te', 'trailers'):
+                headers[key] = value
+
+        response = await client.get(target_url, headers=headers)
+
+        # Build response headers
+        response_headers = {}
+        for key, value in response.headers.items():
+            if key.lower() not in ('content-encoding', 'content-length', 'transfer-encoding',
+                                   'connection'):
+                response_headers[key] = value
+
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            headers=response_headers,
+            media_type=response.headers.get('content-type')
+        )
+
+    except httpx.RequestError as e:
+        logger.error(f"HTTP proxy error for session {session_id}: {e}")
+        raise HTTPException(status_code=502, detail="Failed to connect to terminal service")
 
 
 if __name__ == "__main__":

@@ -489,7 +489,7 @@
         <iframe
             id="terminalFrame"
             class="terminal-iframe"
-            src="http://{{ request.headers.get('host', 'localhost').split(':')[0] }}:{{ ttyd_port }}/"
+            src="/ttyd/{{ session_id }}/"
             onload="hideLoading()"
         ></iframe>
     </div>
