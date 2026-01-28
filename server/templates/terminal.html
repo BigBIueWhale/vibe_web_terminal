@@ -266,7 +266,7 @@
         }
 
         .file-list {
-            max-height: 300px;
+            max-height: 400px;
             overflow-y: auto;
         }
 
@@ -279,6 +279,11 @@
             border-radius: 4px;
             margin-bottom: 0.5rem;
             font-size: 0.9rem;
+            transition: background 0.15s;
+        }
+
+        .file-item:hover {
+            background: #4d4d4d;
         }
 
         .file-item-name {
@@ -286,6 +291,8 @@
             align-items: center;
             gap: 0.5rem;
             overflow: hidden;
+            flex: 1;
+            cursor: pointer;
         }
 
         .file-item-name span {
@@ -294,10 +301,113 @@
             white-space: nowrap;
         }
 
+        .file-item-name.clickable:hover {
+            color: #00d4ff;
+        }
+
+        .file-meta {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            flex-shrink: 0;
+        }
+
         .file-size {
             color: #888;
-            flex-shrink: 0;
-            margin-left: 1rem;
+            font-size: 0.8rem;
+            min-width: 70px;
+            text-align: right;
+        }
+
+        .file-actions {
+            display: flex;
+            gap: 0.25rem;
+        }
+
+        .btn-icon {
+            background: #4d4d4d;
+            border: none;
+            color: #e0e0e0;
+            padding: 0.3rem 0.5rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: background 0.15s;
+        }
+
+        .btn-icon:hover {
+            background: #5d5d5d;
+        }
+
+        .btn-icon.download {
+            background: #2563eb;
+        }
+
+        .btn-icon.download:hover {
+            background: #3b82f6;
+        }
+
+        .breadcrumb {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            margin-bottom: 1rem;
+            padding: 0.5rem 0.75rem;
+            background: #3d3d3d;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            overflow-x: auto;
+            white-space: nowrap;
+        }
+
+        .breadcrumb-item {
+            color: #00d4ff;
+            cursor: pointer;
+            padding: 0.2rem 0.4rem;
+            border-radius: 3px;
+        }
+
+        .breadcrumb-item:hover {
+            background: #4d4d4d;
+        }
+
+        .breadcrumb-sep {
+            color: #666;
+        }
+
+        .breadcrumb-current {
+            color: #e0e0e0;
+        }
+
+        .browser-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .browser-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .btn-sm {
+            padding: 0.35rem 0.7rem;
+            font-size: 0.8rem;
+        }
+
+        .btn-sm.download {
+            background: #2563eb;
+        }
+
+        .btn-sm.download:hover {
+            background: #3b82f6;
+        }
+
+        .empty-state {
+            color: #888;
+            text-align: center;
+            padding: 2rem;
         }
 
         .toast {
@@ -432,15 +542,26 @@
 
     <!-- Files Modal -->
     <div class="modal" id="filesModal">
-        <div class="modal-content">
+        <div class="modal-content" style="min-width: 600px;">
             <div class="modal-header">
-                <h2>Workspace Files</h2>
+                <h2>File Browser</h2>
                 <button class="modal-close" onclick="hideFiles()">&times;</button>
             </div>
-            <div class="file-list" id="workspaceFiles">
-                <p style="color: #888; text-align: center;">Loading...</p>
+
+            <div class="browser-header">
+                <div class="breadcrumb" id="breadcrumb">
+                    <span class="breadcrumb-item" onclick="browseTo('')">workspace</span>
+                </div>
+                <div class="browser-actions">
+                    <button class="btn btn-sm" onclick="refreshBrowser()">Refresh</button>
+                    <button class="btn btn-sm download" id="downloadAllBtn" onclick="downloadCurrentDir()">Download All (ZIP)</button>
+                </div>
             </div>
-            <p class="help-text">Path: /home/vibe/workspace/</p>
+
+            <div class="file-list" id="workspaceFiles">
+                <div class="empty-state">Loading...</div>
+            </div>
+            <p class="help-text">Container path: /home/vibe/workspace/<span id="currentPathDisplay"></span></p>
         </div>
     </div>
 
@@ -475,37 +596,149 @@
             document.getElementById('uploadModal').classList.remove('show');
         }
 
+        let currentBrowsePath = '';
+
         function showFiles() {
             document.getElementById('filesModal').classList.add('show');
-            loadFiles();
+            browseTo('');
         }
 
         function hideFiles() {
             document.getElementById('filesModal').classList.remove('show');
         }
 
-        async function loadFiles() {
+        async function browseTo(path) {
+            currentBrowsePath = path;
             const container = document.getElementById('workspaceFiles');
+            container.innerHTML = '<div class="empty-state">Loading...</div>';
+
             try {
-                const response = await fetch(`/session/${sessionId}/files`);
+                const response = await fetch(`/session/${sessionId}/browse?path=${encodeURIComponent(path)}`);
+                if (!response.ok) throw new Error('Failed to load');
                 const data = await response.json();
 
+                updateBreadcrumb(data.path);
+                document.getElementById('currentPathDisplay').textContent = data.path;
+
                 if (data.files.length === 0) {
-                    container.innerHTML = '<p style="color: #888; text-align: center;">No files yet</p>';
+                    container.innerHTML = '<div class="empty-state">This folder is empty</div>';
                 } else {
-                    container.innerHTML = data.files.map(f => `
-                        <div class="file-item">
-                            <div class="file-item-name">
-                                <span>${f.is_dir ? '📁' : '📄'}</span>
-                                <span>${f.name}</span>
-                            </div>
-                            <span class="file-size">${formatSize(f.size)}</span>
-                        </div>
-                    `).join('');
+                    container.innerHTML = data.files.map(f => {
+                        const filePath = data.path ? `${data.path}/${f.name}` : f.name;
+                        const escapedPath = filePath.replace(/'/g, "\\'");
+                        const escapedName = f.name.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+                        if (f.is_dir) {
+                            return `
+                                <div class="file-item">
+                                    <div class="file-item-name clickable" onclick="browseTo('${escapedPath}')">
+                                        <span>📁</span>
+                                        <span>${escapedName}</span>
+                                    </div>
+                                    <div class="file-meta">
+                                        <span class="file-size">${formatSize(f.size)}</span>
+                                        <div class="file-actions">
+                                            <button class="btn-icon download" onclick="downloadZip('${escapedPath}')" title="Download as ZIP">ZIP</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        } else {
+                            return `
+                                <div class="file-item">
+                                    <div class="file-item-name">
+                                        <span>${getFileIcon(f.name)}</span>
+                                        <span>${escapedName}</span>
+                                    </div>
+                                    <div class="file-meta">
+                                        <span class="file-size">${formatSize(f.size)}</span>
+                                        <div class="file-actions">
+                                            <button class="btn-icon download" onclick="downloadFile('${escapedPath}')" title="Download">DL</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        }
+                    }).join('');
                 }
             } catch (e) {
-                container.innerHTML = '<p style="color: #f87171;">Failed to load files</p>';
+                container.innerHTML = '<div class="empty-state" style="color: #f87171;">Failed to load files</div>';
             }
+        }
+
+        function updateBreadcrumb(path) {
+            const breadcrumb = document.getElementById('breadcrumb');
+            let html = '<span class="breadcrumb-item" onclick="browseTo(\'\')">workspace</span>';
+
+            if (path) {
+                const parts = path.split('/');
+                let accumulated = '';
+                for (let i = 0; i < parts.length; i++) {
+                    accumulated = accumulated ? `${accumulated}/${parts[i]}` : parts[i];
+                    const escapedPath = accumulated.replace(/'/g, "\\'");
+                    const escapedName = parts[i].replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+                    if (i === parts.length - 1) {
+                        html += `<span class="breadcrumb-sep">/</span><span class="breadcrumb-current">${escapedName}</span>`;
+                    } else {
+                        html += `<span class="breadcrumb-sep">/</span><span class="breadcrumb-item" onclick="browseTo('${escapedPath}')">${escapedName}</span>`;
+                    }
+                }
+            }
+
+            breadcrumb.innerHTML = html;
+        }
+
+        function getFileIcon(filename) {
+            const ext = filename.split('.').pop().toLowerCase();
+            const icons = {
+                'js': '📜', 'ts': '📜', 'jsx': '📜', 'tsx': '📜',
+                'py': '🐍', 'rb': '💎', 'go': '🔵', 'rs': '🦀',
+                'html': '🌐', 'css': '🎨', 'scss': '🎨', 'less': '🎨',
+                'json': '📋', 'yaml': '📋', 'yml': '📋', 'xml': '📋',
+                'md': '📝', 'txt': '📝', 'log': '📝',
+                'png': '🖼️', 'jpg': '🖼️', 'jpeg': '🖼️', 'gif': '🖼️', 'svg': '🖼️', 'webp': '🖼️',
+                'mp3': '🎵', 'wav': '🎵', 'ogg': '🎵',
+                'mp4': '🎬', 'webm': '🎬', 'mov': '🎬',
+                'zip': '📦', 'tar': '📦', 'gz': '📦', 'rar': '📦', '7z': '📦',
+                'pdf': '📕', 'doc': '📘', 'docx': '📘', 'xls': '📗', 'xlsx': '📗',
+                'sh': '⚙️', 'bash': '⚙️', 'zsh': '⚙️',
+            };
+            return icons[ext] || '📄';
+        }
+
+        function refreshBrowser() {
+            browseTo(currentBrowsePath);
+        }
+
+        function downloadFile(path) {
+            const url = `/session/${sessionId}/download?path=${encodeURIComponent(path)}`;
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = path.split('/').pop();
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            showToast('Download started');
+        }
+
+        function downloadZip(path) {
+            const url = `/session/${sessionId}/download-zip?path=${encodeURIComponent(path)}`;
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = (path.split('/').pop() || 'workspace') + '.zip';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            showToast('ZIP download started');
+        }
+
+        function downloadCurrentDir() {
+            downloadZip(currentBrowsePath);
+        }
+
+        async function loadFiles() {
+            await browseTo('');
         }
 
         function formatSize(bytes) {

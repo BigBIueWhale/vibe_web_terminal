@@ -8,10 +8,12 @@ Each user gets a unique session with a persistent container they can return to.
 
 import asyncio
 import hashlib
+import io
 import logging
 import os
 import secrets
 import time
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,9 +21,8 @@ from typing import Optional
 
 import aiofiles
 import docker
-import httpx
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -369,6 +370,149 @@ async def list_files(session_id: str):
         })
 
     return {"files": files}
+
+
+@app.get("/session/{session_id}/browse")
+async def browse_files(session_id: str, path: str = ""):
+    """Browse files in the session workspace with subdirectory support."""
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session = sessions[session_id]
+    workspace = Path(session["workspace"])
+
+    # Sanitize and resolve the path
+    clean_path = path.strip("/").replace("..", "")
+    target_dir = workspace / clean_path if clean_path else workspace
+
+    # Security: ensure path is within workspace
+    try:
+        target_dir = target_dir.resolve()
+        if not str(target_dir).startswith(str(workspace.resolve())):
+            raise HTTPException(status_code=400, detail="Invalid path")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if not target_dir.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+
+    if not target_dir.is_dir():
+        raise HTTPException(status_code=400, detail="Path is not a directory")
+
+    files = []
+    try:
+        for item in sorted(target_dir.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+            try:
+                stat = item.stat()
+                files.append({
+                    "name": item.name,
+                    "size": stat.st_size if not item.is_dir() else get_dir_size(item),
+                    "is_dir": item.is_dir(),
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                })
+            except (PermissionError, OSError):
+                continue
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    return {
+        "path": clean_path,
+        "files": files,
+        "parent": str(Path(clean_path).parent) if clean_path else None
+    }
+
+
+def get_dir_size(path: Path) -> int:
+    """Calculate total size of a directory."""
+    total = 0
+    try:
+        for item in path.rglob("*"):
+            if item.is_file():
+                try:
+                    total += item.stat().st_size
+                except (PermissionError, OSError):
+                    pass
+    except (PermissionError, OSError):
+        pass
+    return total
+
+
+@app.get("/session/{session_id}/download")
+async def download_file(session_id: str, path: str):
+    """Download a single file from the session workspace."""
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session = sessions[session_id]
+    workspace = Path(session["workspace"])
+
+    # Sanitize and resolve the path
+    clean_path = path.strip("/").replace("..", "")
+    if not clean_path:
+        raise HTTPException(status_code=400, detail="Path required")
+
+    target_file = (workspace / clean_path).resolve()
+
+    # Security: ensure path is within workspace
+    if not str(target_file).startswith(str(workspace.resolve())):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if not target_file.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if target_file.is_dir():
+        raise HTTPException(status_code=400, detail="Use download-zip for directories")
+
+    return FileResponse(
+        path=target_file,
+        filename=target_file.name,
+        media_type="application/octet-stream"
+    )
+
+
+@app.get("/session/{session_id}/download-zip")
+async def download_zip(session_id: str, path: str = ""):
+    """Download a directory as a ZIP file."""
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session = sessions[session_id]
+    workspace = Path(session["workspace"])
+
+    # Sanitize and resolve the path
+    clean_path = path.strip("/").replace("..", "")
+    target_dir = (workspace / clean_path).resolve() if clean_path else workspace.resolve()
+
+    # Security: ensure path is within workspace
+    if not str(target_dir).startswith(str(workspace.resolve())):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if not target_dir.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+
+    if not target_dir.is_dir():
+        raise HTTPException(status_code=400, detail="Path is not a directory")
+
+    # Create ZIP in memory
+    zip_buffer = io.BytesIO()
+    zip_name = target_dir.name if clean_path else f"workspace-{session_id[:8]}"
+
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file_path in target_dir.rglob("*"):
+            if file_path.is_file():
+                try:
+                    arcname = file_path.relative_to(target_dir)
+                    zf.write(file_path, arcname)
+                except (PermissionError, OSError) as e:
+                    logger.warning(f"Skipping file {file_path}: {e}")
+
+    zip_buffer.seek(0)
+
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{zip_name}.zip"'}
+    )
 
 
 @app.delete("/session/{session_id}")
