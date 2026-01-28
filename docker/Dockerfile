@@ -68,6 +68,13 @@ RUN mkdir -p /home/vibe/.vibe
 COPY --chown=vibe:vibe config/vibe-config.toml /home/vibe/.vibe/config.toml
 COPY --chown=vibe:vibe config/vibe-env /home/vibe/.vibe/.env
 
+# Copy session startup script (for persistent tmux sessions)
+COPY --chown=vibe:vibe config/start-session.sh /home/vibe/.local/bin/start-session.sh
+RUN chmod +x /home/vibe/.local/bin/start-session.sh
+
+# Copy tmux configuration
+COPY --chown=vibe:vibe config/tmux.conf /home/vibe/.tmux.conf
+
 # Create workspace directory for user files
 RUN mkdir -p /home/vibe/workspace
 
@@ -91,11 +98,12 @@ WORKDIR /home/vibe/workspace
 # Expose ttyd port
 EXPOSE 7681
 
-# Default command: start ttyd with enhanced options
+# Default command: start ttyd with persistent tmux session
 # -W: Writable (allow client input)
 # -p 7681: Port
 # -t fontSize=14: Font size
 # -t scrollback=10000: 10k line scrollback
 # -t cursorStyle=bar: Bar cursor
 # -t cursorBlink=true: Blinking cursor
-CMD ["/usr/local/bin/ttyd", "-W", "-p", "7681", "-t", "fontSize=14", "-t", "scrollback=10000", "-t", "cursorStyle=bar", "-t", "cursorBlink=true", "/bin/bash", "-l"]
+# Uses start-session.sh to maintain tmux session across page refreshes
+CMD ["/usr/local/bin/ttyd", "-W", "-p", "7681", "-t", "fontSize=14", "-t", "scrollback=10000", "-t", "cursorStyle=bar", "-t", "cursorBlink=true", "/home/vibe/.local/bin/start-session.sh"]
