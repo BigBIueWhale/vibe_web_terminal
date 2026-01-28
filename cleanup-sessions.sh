@@ -18,7 +18,7 @@
 #   ./cleanup-sessions.sh --force  # no prompts, just delete everything
 # =============================================================================
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTAINER_PREFIX="vibe-session-"
@@ -37,7 +37,11 @@ echo ""
 
 # Find containers (running + stopped)
 CONTAINERS=$(docker ps -a --filter "name=$CONTAINER_PREFIX" --format "{{.ID}}\t{{.Names}}\t{{.Status}}" 2>/dev/null || true)
-CONTAINER_COUNT=$(echo "$CONTAINERS" | grep -c . 2>/dev/null || echo 0)
+if [[ -z "$CONTAINERS" ]]; then
+    CONTAINER_COUNT=0
+else
+    CONTAINER_COUNT=$(echo "$CONTAINERS" | wc -l)
+fi
 
 # Find workspace directories
 WORKSPACE_DIRS=()
@@ -131,12 +135,13 @@ if [[ "$CONTAINER_COUNT" -gt 0 ]]; then
 fi
 
 # 2. Remove workspace directories (new location)
+#    Files inside were created by Docker containers (different UID), so plain
+#    rm may fail with "Permission denied". We use a throwaway Docker container
+#    running as root to delete everything cleanly.
 if [[ ${#WORKSPACE_DIRS[@]} -gt 0 ]]; then
     echo "Removing workspace directories (data/workspaces/)..."
-    for dir in "${WORKSPACE_DIRS[@]}"; do
-        echo "  Removing $(basename "$dir")..."
-        rm -rf "$dir"
-    done
+    docker run --rm -v "$DATA_DIR/workspaces:/cleanup" alpine sh -c "rm -rf /cleanup/*" 2>/dev/null \
+        || rm -rf "$DATA_DIR/workspaces"/* 2>/dev/null || true
     echo "  Done."
     echo ""
 fi
@@ -144,10 +149,8 @@ fi
 # 3. Remove old workspace directories
 if [[ ${#OLD_WORKSPACE_DIRS[@]} -gt 0 ]]; then
     echo "Removing old workspace directories (/tmp/vibe-workspaces/)..."
-    for dir in "${OLD_WORKSPACE_DIRS[@]}"; do
-        echo "  Removing $(basename "$dir")..."
-        rm -rf "$dir"
-    done
+    docker run --rm -v "$OLD_WORKSPACE_DIR:/cleanup" alpine sh -c "rm -rf /cleanup/*" 2>/dev/null \
+        || rm -rf "$OLD_WORKSPACE_DIR"/* 2>/dev/null || true
     echo "  Done."
     echo ""
 fi
