@@ -13,12 +13,15 @@ import os
 import secrets
 import zipfile
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum, auto
 from pathlib import Path
 from typing import Optional
 
 import aiofiles
-import docker
+import aiodocker
+import aiodocker.exceptions
 import httpx
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse, Response
@@ -50,42 +53,362 @@ WORKSPACE_BASE = Path("/tmp/vibe-workspaces")  # /tmp is cleared on reboot
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Docker client
-docker_client = docker.from_env()
+# Docker client (initialized in lifespan)
+docker_client: aiodocker.Docker | None = None
 
-# Session storage (in production, use Redis or a database)
-sessions: dict[str, dict] = {}
-port_allocations: set[int] = set()
+
+def is_container_not_found(e: Exception) -> bool:
+    """Check if exception indicates container not found."""
+    return isinstance(e, aiodocker.exceptions.DockerError) and e.status == 404
+
+
+# =============================================================================
+# SESSION STATE MACHINE
+# =============================================================================
+
+
+class SessionState(Enum):
+    """State machine for session lifecycle."""
+    CREATING = auto()  # Container being created
+    READY = auto()     # Accepting connections
+    DELETING = auto()  # Being cleaned up
+
+
+class SessionError(Exception):
+    """Exception for session-related errors."""
+    pass
+
+
+@dataclass
+class Session:
+    """
+    Represents a terminal session with state machine and reference counting.
+
+    State transitions:
+        CREATING -> READY -> DELETING -> (removed)
+    """
+    session_id: str
+    container_id: str | None = None
+    container_name: str | None = None
+    port: int | None = None
+    workspace: str | None = None
+    created_at: datetime = field(default_factory=datetime.now)
+    last_accessed: datetime = field(default_factory=datetime.now)
+
+    _state: SessionState = SessionState.CREATING
+    _ref_count: int = 0  # Active WebSocket connections
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def can_delete(self) -> bool:
+        """Check if session can be deleted (READY state and no active refs)."""
+        return self._state == SessionState.READY and self._ref_count == 0
+
+    def acquire_ref(self) -> None:
+        """Increment ref_count. Raises if not READY."""
+        if self._state != SessionState.READY:
+            raise SessionError(f"Session not ready: {self._state}")
+        self._ref_count += 1
+
+    def release_ref(self) -> None:
+        """Decrement ref_count."""
+        if self._ref_count > 0:
+            self._ref_count -= 1
+
+
+class SessionManager:
+    """
+    Manages sessions with proper concurrency control.
+
+    Lock ordering (to prevent deadlocks):
+        1. _global_lock (global)
+        2. session._lock (per-session)
+    """
+
+    def __init__(self):
+        self._sessions: dict[str, Session] = {}
+        self._global_lock = asyncio.Lock()  # For creation/deletion
+        self._port_allocations: set[int] = set()
+
+    def _is_port_in_use(self, port: int) -> bool:
+        """Check if a port is actually in use on the system."""
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("0.0.0.0", port))
+                return False
+            except OSError:
+                return True
+
+    def _allocate_port(self) -> int:
+        """Allocate an available port for a container."""
+        for port in range(HOST_PORT_START, HOST_PORT_END):
+            if port not in self._port_allocations and not self._is_port_in_use(port):
+                self._port_allocations.add(port)
+                return port
+        raise RuntimeError("No available ports")
+
+    def _release_port(self, port: int) -> None:
+        """Release a port allocation."""
+        self._port_allocations.discard(port)
+
+    async def get_or_create_session(self, session_id: str) -> Session:
+        """
+        Get existing or create new session (prevents duplicates).
+
+        Uses double-check locking pattern for efficiency.
+        """
+        # Fast path: existing READY session
+        session = self._sessions.get(session_id)
+        if session and session._state == SessionState.READY:
+            async with session._lock:
+                session.last_accessed = datetime.now()
+                # Verify container is still running
+                try:
+                    container = await docker_client.containers.get(session.container_name)
+                    info = await container.show()
+                    if info["State"]["Status"] == "running":
+                        return session
+                except aiodocker.exceptions.DockerError:
+                    pass
+                # Container not running, need to recreate
+                session._state = SessionState.DELETING
+
+        # Slow path: need global lock
+        async with self._global_lock:
+            # Double-check pattern
+            session = self._sessions.get(session_id)
+            if session and session._state == SessionState.READY:
+                return session
+
+            # Clean up old session if exists
+            if session:
+                self._sessions.pop(session_id, None)
+                if session.port:
+                    self._release_port(session.port)
+
+            # Create new session with port allocation (atomic)
+            session = Session(session_id=session_id)
+            self._sessions[session_id] = session
+            port = self._allocate_port()
+            session.port = port
+
+        # Create container (outside global lock, but session is in CREATING state)
+        try:
+            await self._create_container(session)
+            async with session._lock:
+                session._state = SessionState.READY
+            return session
+        except Exception as e:
+            # Cleanup on failure
+            async with self._global_lock:
+                self._sessions.pop(session_id, None)
+                if session.port:
+                    self._release_port(session.port)
+            raise
+
+    async def _create_container(self, session: Session) -> None:
+        """Create a Docker container for the session."""
+        container_name = get_container_name(session.session_id)
+        session.container_name = container_name
+
+        # Create workspace directory
+        workspace_dir = WORKSPACE_BASE / session.session_id
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(workspace_dir, 0o777)
+        session.workspace = str(workspace_dir)
+
+        # Remove existing container if any
+        try:
+            old_container = await docker_client.containers.get(container_name)
+            await old_container.delete(force=True)
+        except aiodocker.exceptions.DockerError as e:
+            if not is_container_not_found(e):
+                raise
+
+        # Create container on default bridge (iptables handles isolation)
+        config = {
+            "Image": DOCKER_IMAGE,
+            "Env": ["TERM=xterm-256color"],
+            "HostConfig": {
+                "PortBindings": {
+                    "7681/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(session.port)}]
+                },
+                "Binds": [f"{workspace_dir}:/home/vibe/workspace:rw"],
+                "ExtraHosts": ["host.docker.internal:host-gateway"],
+                "Memory": 2147483648,  # 2GB
+                "CpuPeriod": 100000,
+                "CpuQuota": 100000,  # 1 CPU
+            },
+        }
+
+        container = await docker_client.containers.run(config=config, name=container_name)
+        session.container_id = container.id
+
+        logger.info(f"Created container {container_name} on port {session.port}")
+
+        # Wait for ttyd to start
+        await asyncio.sleep(2)
+
+    async def acquire_session_ref(self, session_id: str) -> Session:
+        """Acquire reference for WebSocket (atomic ref_count increment)."""
+        session = self._sessions.get(session_id)
+        if not session:
+            raise SessionError("Session not found")
+        async with session._lock:
+            session.acquire_ref()
+            session.last_accessed = datetime.now()
+        return session
+
+    async def release_session_ref(self, session: Session) -> None:
+        """Release reference when WebSocket disconnects."""
+        async with session._lock:
+            session.release_ref()
+
+    async def delete_session(self, session_id: str) -> bool:
+        """
+        Delete session if ref_count=0 (prevents use-after-delete).
+
+        Returns True if deleted, False if not found or has active connections.
+        """
+        async with self._global_lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                return False
+            async with session._lock:
+                if not session.can_delete():
+                    return False
+                session._state = SessionState.DELETING
+                self._sessions.pop(session_id)
+                if session.port:
+                    self._release_port(session.port)
+
+        # Cleanup outside lock
+        await self._cleanup_container(session)
+        return True
+
+    async def _cleanup_container(self, session: Session) -> None:
+        """Clean up container and workspace for a session."""
+        # Remove container
+        if session.container_name:
+            try:
+                container = await docker_client.containers.get(session.container_name)
+                await container.delete(force=True)
+            except aiodocker.exceptions.DockerError:
+                pass
+
+        # Clean up workspace
+        if session.workspace:
+            workspace = Path(session.workspace)
+            if workspace.exists():
+                import shutil
+                shutil.rmtree(workspace, ignore_errors=True)
+
+    def get_session(self, session_id: str) -> Session | None:
+        """Get a session by ID without creating it."""
+        return self._sessions.get(session_id)
+
+    def get_session_port(self, session_id: str) -> int | None:
+        """Get the ttyd port for a session, or None if not found."""
+        session = self._sessions.get(session_id)
+        if session and session._state == SessionState.READY:
+            return session.port
+        return None
+
+    async def recover_existing_sessions(self) -> None:
+        """Discover and re-register containers from previous server runs.
+
+        Running containers with the CONTAINER_PREFIX are recovered as READY
+        sessions. Stopped/dead containers are removed.
+        """
+        try:
+            containers = await docker_client.containers.list(
+                all=True, filters={"name": [CONTAINER_PREFIX]}
+            )
+        except Exception as e:
+            logger.error(f"Failed to list existing containers: {e}")
+            return
+
+        for container in containers:
+            try:
+                info = await container.show()
+                name = info["Name"].lstrip("/")
+                status = info["State"]["Status"]
+
+                # Remove stopped/dead containers
+                if status not in ("running",):
+                    logger.info(f"Removing non-running container {name} (status: {status})")
+                    await container.delete(force=True)
+                    continue
+
+                # Extract session ID from workspace bind mount
+                session_id = None
+                binds = info.get("HostConfig", {}).get("Binds", [])
+                for bind in binds:
+                    parts = bind.split(":")
+                    if len(parts) >= 2 and "/home/vibe/workspace" in parts[1]:
+                        session_id = Path(parts[0]).name
+                        break
+
+                if not session_id:
+                    logger.warning(f"Cannot determine session ID for container {name}, removing")
+                    await container.delete(force=True)
+                    continue
+
+                # Extract port from PortBindings
+                port = None
+                port_bindings = info.get("HostConfig", {}).get("PortBindings", {})
+                for _key, bindings in port_bindings.items():
+                    if bindings:
+                        port = int(bindings[0]["HostPort"])
+                        break
+
+                if not port:
+                    logger.warning(f"Cannot determine port for container {name}, removing")
+                    await container.delete(force=True)
+                    continue
+
+                workspace_dir = WORKSPACE_BASE / session_id
+                created_str = info.get("Created", "")
+                try:
+                    # Docker returns ISO format like "2025-01-28T12:00:00.000000000Z"
+                    created_at = datetime.fromisoformat(created_str.replace("Z", "+00:00")).replace(tzinfo=None)
+                except (ValueError, AttributeError):
+                    created_at = datetime.now()
+
+                session = Session(
+                    session_id=session_id,
+                    container_id=container.id,
+                    container_name=name,
+                    port=port,
+                    workspace=str(workspace_dir),
+                    created_at=created_at,
+                    last_accessed=datetime.now(),
+                )
+                session._state = SessionState.READY
+
+                self._sessions[session_id] = session
+                self._port_allocations.add(port)
+
+                logger.info(f"Recovered session {session_id} (container {name}, port {port})")
+
+            except Exception as e:
+                logger.error(f"Failed to recover container: {e}")
+
+        if self._sessions:
+            logger.info(f"Recovered {len(self._sessions)} session(s) from previous run")
+
+    def list_sessions(self) -> list[Session]:
+        """Get all sessions."""
+        return list(self._sessions.values())
+
+
+# Global session manager
+session_manager = SessionManager()
 
 
 def generate_session_id() -> str:
-    """Generate a unique session ID."""
-    return secrets.token_urlsafe(16)
-
-
-def is_port_in_use(port: int) -> bool:
-    """Check if a port is actually in use on the system."""
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.bind(("0.0.0.0", port))
-            return False
-        except OSError:
-            return True
-
-
-def allocate_port() -> int:
-    """Allocate an available port for a container."""
-    for port in range(HOST_PORT_START, HOST_PORT_END):
-        if port not in port_allocations and not is_port_in_use(port):
-            port_allocations.add(port)
-            return port
-    raise RuntimeError("No available ports")
-
-
-def release_port(port: int):
-    """Release a port allocation."""
-    port_allocations.discard(port)
+    """Generate a cryptographically secure session ID (512 bits of entropy)."""
+    return secrets.token_urlsafe(64)
 
 
 def get_container_name(session_id: str) -> str:
@@ -93,107 +416,25 @@ def get_container_name(session_id: str) -> str:
     return f"{CONTAINER_PREFIX}{session_id[:12]}"
 
 
-async def create_container(session_id: str) -> dict:
-    """Create a new Docker container for a session."""
-    port = allocate_port()
-    container_name = get_container_name(session_id)
-
-    # Create workspace directory
-    workspace_dir = WORKSPACE_BASE / session_id
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(workspace_dir, 0o777)
-
-    try:
-        # Remove existing container if any
-        try:
-            old_container = docker_client.containers.get(container_name)
-            old_container.remove(force=True)
-        except docker.errors.NotFound:
-            pass
-
-        # Create new container
-        # Bind ttyd port to localhost only - all external access goes through our proxy
-        container = docker_client.containers.run(
-            DOCKER_IMAGE,
-            name=container_name,
-            detach=True,
-            ports={"7681/tcp": ("127.0.0.1", port)},
-            volumes={
-                str(workspace_dir): {"bind": "/home/vibe/workspace", "mode": "rw"}
-            },
-            # Allow container to reach host's Ollama
-            extra_hosts={"host.docker.internal": "host-gateway"},
-            environment={
-                "TERM": "xterm-256color",
-            },
-            mem_limit="2g",
-            cpu_period=100000,
-            cpu_quota=100000,  # 1 CPU
-        )
-
-        session_data = {
-            "session_id": session_id,
-            "container_id": container.id,
-            "container_name": container_name,
-            "port": port,
-            "workspace": str(workspace_dir),
-            "created_at": datetime.now().isoformat(),
-            "last_accessed": datetime.now().isoformat(),
-        }
-
-        sessions[session_id] = session_data
-        logger.info(f"Created container {container_name} on port {port}")
-
-        # Wait for ttyd to start
-        await asyncio.sleep(2)
-
-        return session_data
-
-    except Exception as e:
-        release_port(port)
-        logger.error(f"Failed to create container: {e}")
-        raise
-
-
-async def get_or_create_session(session_id: str) -> dict:
-    """Get existing session or create a new one."""
-    if session_id in sessions:
-        session = sessions[session_id]
-        session["last_accessed"] = datetime.now().isoformat()
-
-        # Check if container is still running
-        try:
-            container = docker_client.containers.get(session["container_name"])
-            if container.status != "running":
-                logger.info(f"Container {session['container_name']} not running, recreating")
-                return await create_container(session_id)
-        except docker.errors.NotFound:
-            logger.info(f"Container {session['container_name']} not found, recreating")
-            return await create_container(session_id)
-
-        return session
-    else:
-        return await create_container(session_id)
-
-
 async def cleanup_old_sessions():
     """Clean up stopped/dead containers. No time-based expiry - containers persist until reboot."""
     while True:
         try:
             # Only clean up containers that have stopped/died (not time-based)
-            for session_id, session in list(sessions.items()):
+            for session in session_manager.list_sessions():
+                if session._state != SessionState.READY:
+                    continue
                 try:
-                    container = docker_client.containers.get(session["container_name"])
-                    if container.status in ("exited", "dead"):
+                    container = await docker_client.containers.get(session.container_name)
+                    info = await container.show()
+                    if info["State"]["Status"] in ("exited", "dead"):
                         # Container stopped - clean up
-                        sessions.pop(session_id, None)
-                        container.remove(force=True)
-                        release_port(session["port"])
-                        logger.info(f"Cleaned up stopped container for session {session_id}")
-                except docker.errors.NotFound:
-                    # Container gone - clean up session
-                    sessions.pop(session_id, None)
-                    release_port(session.get("port", 0))
+                        await session_manager.delete_session(session.session_id)
+                        logger.info(f"Cleaned up stopped container for session {session.session_id}")
+                except aiodocker.exceptions.DockerError as e:
+                    if is_container_not_found(e):
+                        # Container gone - clean up session
+                        await session_manager.delete_session(session.session_id)
 
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
@@ -204,9 +445,11 @@ async def cleanup_old_sessions():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    global _http_client
+    global _http_client, docker_client
     # Startup
     WORKSPACE_BASE.mkdir(parents=True, exist_ok=True)
+    docker_client = aiodocker.Docker()  # Initialize async client
+    await session_manager.recover_existing_sessions()
     cleanup_task = asyncio.create_task(cleanup_old_sessions())
     logger.info("Vibe Web Terminal server started")
 
@@ -214,7 +457,12 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     cleanup_task.cancel()
-    # Close HTTP client used for proxying
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
+    if docker_client is not None:
+        await docker_client.close()  # Close async client
     if _http_client is not None:
         await _http_client.aclose()
         _http_client = None
@@ -253,7 +501,7 @@ async def create_new_session():
     """Create a new terminal session."""
     session_id = generate_session_id()
     try:
-        session = await create_container(session_id)
+        await session_manager.get_or_create_session(session_id)
         return JSONResponse({
             "session_id": session_id,
             "redirect": f"/terminal/{session_id}"
@@ -266,11 +514,11 @@ async def create_new_session():
 async def terminal_page(request: Request, session_id: str):
     """Terminal page for a session."""
     try:
-        session = await get_or_create_session(session_id)
+        session = await session_manager.get_or_create_session(session_id)
         return templates.TemplateResponse("terminal.html", {
             "request": request,
             "session_id": session_id,
-            "ttyd_port": session["port"],
+            "ttyd_port": session.port,
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -279,23 +527,26 @@ async def terminal_page(request: Request, session_id: str):
 @app.get("/session/{session_id}/status")
 async def session_status(session_id: str):
     """Get session status."""
-    if session_id not in sessions:
+    session = session_manager.get_session(session_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = sessions[session_id]
     try:
-        container = docker_client.containers.get(session["container_name"])
+        container = await docker_client.containers.get(session.container_name)
+        info = await container.show()
         return {
             "session_id": session_id,
-            "status": container.status,
-            "created_at": session["created_at"],
-            "last_accessed": session["last_accessed"],
+            "status": info["State"]["Status"],
+            "created_at": session.created_at.isoformat(),
+            "last_accessed": session.last_accessed.isoformat(),
         }
-    except docker.errors.NotFound:
-        return {
-            "session_id": session_id,
-            "status": "not_found",
-        }
+    except aiodocker.exceptions.DockerError as e:
+        if is_container_not_found(e):
+            return {
+                "session_id": session_id,
+                "status": "not_found",
+            }
+        raise
 
 
 @app.post("/session/{session_id}/upload")
@@ -311,11 +562,11 @@ async def upload_file(
         file: The file to upload
         path: Optional relative path (for folder uploads, preserves structure)
     """
-    if session_id not in sessions:
+    session = session_manager.get_session(session_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = sessions[session_id]
-    workspace = Path(session["workspace"])
+    workspace = Path(session.workspace)
 
     # Use provided path or fall back to filename
     relative_path = path or file.filename
@@ -363,11 +614,11 @@ async def upload_file(
 @app.get("/session/{session_id}/files")
 async def list_files(session_id: str):
     """List files in the session workspace."""
-    if session_id not in sessions:
+    session = session_manager.get_session(session_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = sessions[session_id]
-    workspace = Path(session["workspace"])
+    workspace = Path(session.workspace)
 
     files = []
     for item in workspace.iterdir():
@@ -385,11 +636,11 @@ async def list_files(session_id: str):
 @app.get("/session/{session_id}/browse")
 async def browse_files(session_id: str, path: str = ""):
     """Browse files in the session workspace with subdirectory support."""
-    if session_id not in sessions:
+    session = session_manager.get_session(session_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = sessions[session_id]
-    workspace = Path(session["workspace"])
+    workspace = Path(session.workspace)
 
     # Sanitize and resolve the path
     clean_path = path.strip("/").replace("..", "")
@@ -450,11 +701,11 @@ def get_dir_size(path: Path) -> int:
 @app.get("/session/{session_id}/download")
 async def download_file(session_id: str, path: str):
     """Download a single file from the session workspace."""
-    if session_id not in sessions:
+    session = session_manager.get_session(session_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = sessions[session_id]
-    workspace = Path(session["workspace"])
+    workspace = Path(session.workspace)
 
     # Sanitize and resolve the path
     clean_path = path.strip("/").replace("..", "")
@@ -483,11 +734,11 @@ async def download_file(session_id: str, path: str):
 @app.get("/session/{session_id}/download-zip")
 async def download_zip(session_id: str, path: str = ""):
     """Download a directory as a ZIP file."""
-    if session_id not in sessions:
+    session = session_manager.get_session(session_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = sessions[session_id]
-    workspace = Path(session["workspace"])
+    workspace = Path(session.workspace)
 
     # Sanitize and resolve the path
     clean_path = path.strip("/").replace("..", "")
@@ -528,48 +779,51 @@ async def download_zip(session_id: str, path: str = ""):
 @app.delete("/session/{session_id}")
 async def delete_session(session_id: str):
     """Delete a session and its container."""
-    if session_id not in sessions:
+    session = session_manager.get_session(session_id)
+    if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = sessions.pop(session_id)
+    # Check if there are active WebSocket connections
+    if session._ref_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Session has {session._ref_count} active connections"
+        )
 
-    try:
-        container = docker_client.containers.get(session["container_name"])
-        container.remove(force=True)
-    except docker.errors.NotFound:
-        pass
-
-    release_port(session["port"])
-
-    # Clean up workspace
-    workspace = Path(session["workspace"])
-    if workspace.exists():
-        import shutil
-        shutil.rmtree(workspace, ignore_errors=True)
+    deleted = await session_manager.delete_session(session_id)
+    if not deleted:
+        raise HTTPException(status_code=409, detail="Session could not be deleted")
 
     return {"status": "deleted"}
 
 
 @app.get("/sessions")
 async def list_sessions():
-    """List all active sessions (admin endpoint)."""
+    """List all active sessions (admin endpoint).
+
+    Session IDs are deliberately omitted to prevent enumeration attacks.
+    """
     result = []
-    for session_id, session in sessions.items():
+    for session in session_manager.list_sessions():
         try:
-            container = docker_client.containers.get(session["container_name"])
-            status = container.status
-        except docker.errors.NotFound:
-            status = "not_found"
+            container = await docker_client.containers.get(session.container_name)
+            info = await container.show()
+            status = info["State"]["Status"]
+        except aiodocker.exceptions.DockerError as e:
+            if is_container_not_found(e):
+                status = "not_found"
+            else:
+                status = "error"
 
         result.append({
-            "session_id": session_id,
             "status": status,
-            "port": session["port"],
-            "created_at": session["created_at"],
-            "last_accessed": session["last_accessed"],
+            "created_at": session.created_at.isoformat(),
+            "last_accessed": session.last_accessed.isoformat(),
+            "ref_count": session._ref_count,
+            "state": session._state.name,
         })
 
-    return {"sessions": result}
+    return {"count": len(result), "sessions": result}
 
 
 # =============================================================================
@@ -589,11 +843,7 @@ async def get_http_client() -> httpx.AsyncClient:
 
 def get_session_port(session_id: str) -> Optional[int]:
     """Get the ttyd port for a session, or None if not found."""
-    session = sessions.get(session_id)
-    if session:
-        session["last_accessed"] = datetime.now().isoformat()
-        return session["port"]
-    return None
+    return session_manager.get_session_port(session_id)
 
 
 @app.websocket("/ttyd/{session_id}/ws")
@@ -605,81 +855,89 @@ async def websocket_proxy(websocket: WebSocket, session_id: str):
     - Single port entry (8080) for all connections
     - Connection monitoring and heartbeat
     - Graceful reconnection handling
+    - Reference counting to prevent use-after-delete races
     """
-    port = get_session_port(session_id)
-    if port is None:
+    # Acquire session reference (prevents deletion while we're connected)
+    try:
+        session = await session_manager.acquire_session_ref(session_id)
+    except SessionError:
         await websocket.close(code=4004, reason="Session not found")
         return
 
-    # Accept with 'tty' subprotocol - required by ttyd
-    await websocket.accept(subprotocol="tty")
-    logger.info(f"WebSocket proxy started for session {session_id} -> port {port}")
-
-    # Connect to ttyd's WebSocket
-    ttyd_ws = None
     try:
-        import websockets
-        ttyd_url = f"ws://127.0.0.1:{port}/ws"
+        port = session.port  # Safe - we hold reference
+        # Accept with 'tty' subprotocol - required by ttyd
+        await websocket.accept(subprotocol="tty")
+        logger.info(f"WebSocket proxy started for session {session_id} -> port {port}")
 
-        async with websockets.connect(
-            ttyd_url,
-            subprotocols=["tty"],  # Required by ttyd
-            ping_interval=20,  # Send ping every 20 seconds
-            ping_timeout=20,   # Wait 20 seconds for pong
-            close_timeout=5,   # 5 second close timeout
-        ) as ttyd_ws:
+        # Connect to ttyd's WebSocket
+        ttyd_ws = None
+        try:
+            import websockets
+            ttyd_url = f"ws://127.0.0.1:{port}/ws"
 
-            async def forward_to_ttyd():
-                """Forward messages from browser to ttyd."""
+            async with websockets.connect(
+                ttyd_url,
+                subprotocols=["tty"],  # Required by ttyd
+                ping_interval=20,  # Send ping every 20 seconds
+                ping_timeout=20,   # Wait 20 seconds for pong
+                close_timeout=5,   # 5 second close timeout
+            ) as ttyd_ws:
+
+                async def forward_to_ttyd():
+                    """Forward messages from browser to ttyd."""
+                    try:
+                        while True:
+                            if websocket.client_state != WebSocketState.CONNECTED:
+                                break
+                            data = await websocket.receive()
+                            if data["type"] == "websocket.receive":
+                                if "bytes" in data:
+                                    await ttyd_ws.send(data["bytes"])
+                                elif "text" in data:
+                                    await ttyd_ws.send(data["text"])
+                            elif data["type"] == "websocket.disconnect":
+                                break
+                    except WebSocketDisconnect:
+                        pass
+                    except Exception as e:
+                        logger.debug(f"Forward to ttyd ended: {e}")
+
+                async def forward_to_browser():
+                    """Forward messages from ttyd to browser."""
+                    try:
+                        async for message in ttyd_ws:
+                            if websocket.client_state != WebSocketState.CONNECTED:
+                                break
+                            if isinstance(message, bytes):
+                                await websocket.send_bytes(message)
+                            else:
+                                await websocket.send_text(message)
+                    except Exception as e:
+                        logger.debug(f"Forward to browser ended: {e}")
+
+                # Run both directions concurrently
+                await asyncio.gather(
+                    forward_to_ttyd(),
+                    forward_to_browser(),
+                    return_exceptions=True
+                )
+
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.info(f"ttyd WebSocket closed for session {session_id}: {e}")
+        except Exception as e:
+            logger.error(f"WebSocket proxy error for session {session_id}: {e}")
+        finally:
+            # Clean up WebSocket
+            if websocket.client_state == WebSocketState.CONNECTED:
                 try:
-                    while True:
-                        if websocket.client_state != WebSocketState.CONNECTED:
-                            break
-                        data = await websocket.receive()
-                        if data["type"] == "websocket.receive":
-                            if "bytes" in data:
-                                await ttyd_ws.send(data["bytes"])
-                            elif "text" in data:
-                                await ttyd_ws.send(data["text"])
-                        elif data["type"] == "websocket.disconnect":
-                            break
-                except WebSocketDisconnect:
+                    await websocket.close()
+                except Exception:
                     pass
-                except Exception as e:
-                    logger.debug(f"Forward to ttyd ended: {e}")
-
-            async def forward_to_browser():
-                """Forward messages from ttyd to browser."""
-                try:
-                    async for message in ttyd_ws:
-                        if websocket.client_state != WebSocketState.CONNECTED:
-                            break
-                        if isinstance(message, bytes):
-                            await websocket.send_bytes(message)
-                        else:
-                            await websocket.send_text(message)
-                except Exception as e:
-                    logger.debug(f"Forward to browser ended: {e}")
-
-            # Run both directions concurrently
-            await asyncio.gather(
-                forward_to_ttyd(),
-                forward_to_browser(),
-                return_exceptions=True
-            )
-
-    except websockets.exceptions.ConnectionClosed as e:
-        logger.info(f"ttyd WebSocket closed for session {session_id}: {e}")
-    except Exception as e:
-        logger.error(f"WebSocket proxy error for session {session_id}: {e}")
+            logger.info(f"WebSocket proxy ended for session {session_id}")
     finally:
-        # Clean up
-        if websocket.client_state == WebSocketState.CONNECTED:
-            try:
-                await websocket.close()
-            except Exception:
-                pass
-        logger.info(f"WebSocket proxy ended for session {session_id}")
+        # Always release the session reference
+        await session_manager.release_session_ref(session)
 
 
 @app.get("/ttyd/{session_id}/{path:path}")
