@@ -1559,9 +1559,35 @@ RUN chmod -R a+rX /opt/playwright-browsers
 RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd && \
     ln -sf /usr/bin/batcat /usr/local/bin/bat
 
-# Install ttyd for web terminal
-RUN wget -O /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 \
-    && chmod +x /usr/local/bin/ttyd
+# Build ttyd from source for OSC 52 clipboard support
+# Released 1.7.7 bundles xterm.js 5.4.0 without the clipboard addon.
+# Commit 9c87671 on main includes @xterm/addon-clipboard for OSC 52 browser clipboard.
+RUN apt-get update && apt-get install -y \
+    libjson-c-dev \
+    libuv1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build libwebsockets 4.3.6 with libuv support (required by ttyd)
+RUN git clone --depth 1 --branch v4.3.6 https://github.com/warmcat/libwebsockets.git /tmp/lws && \
+    mkdir /tmp/lws/build && cd /tmp/lws/build && \
+    cmake .. \
+        -DLWS_WITH_LIBUV=ON \
+        -DLWS_WITHOUT_CLIENT=ON \
+        -DLWS_WITH_HTTP2=ON \
+        -DCMAKE_BUILD_TYPE=Release && \
+    make -j$(nproc) && make install && ldconfig && \
+    rm -rf /tmp/lws
+
+# Build ttyd: frontend (xterm.js 5.5.0 + clipboard addon) then C backend
+RUN git clone https://github.com/tsl0922/ttyd.git /tmp/ttyd && \
+    cd /tmp/ttyd && git checkout 9c87671ccae9eefa3c01b08169272c0922e7cdff && \
+    npm install -g corepack && corepack enable && \
+    cd /tmp/ttyd/html && yarn install && yarn build && \
+    mkdir /tmp/ttyd/build && cd /tmp/ttyd/build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release && \
+    make -j$(nproc) && \
+    cp ttyd /usr/local/bin/ttyd && \
+    rm -rf /tmp/ttyd
 
 # Install uv for Python package management
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -1614,8 +1640,9 @@ RUN echo 'export PS1="\[\033[1;32m\]\u@vibe-terminal\[\033[0m\]:\[\033[1;34m\]\w
     && echo 'echo "Welcome to Vibe Terminal!"' >> /home/vibe/.bashrc \
     && echo 'echo ""' >> /home/vibe/.bashrc \
     && echo 'echo "Copy tips:"' >> /home/vibe/.bashrc \
-    && echo 'echo "  Select text                  Copy to clipboard"' >> /home/vibe/.bashrc \
-    && echo 'echo "  Shift + Select (in vibe)     Select text in mouse-enabled apps"' >> /home/vibe/.bashrc \
+    && echo 'echo "  Drag to select               Auto-copies to clipboard (OSC 52)"' >> /home/vibe/.bashrc \
+    && echo 'echo "  Shift + drag                 Native browser text selection"' >> /home/vibe/.bashrc \
+    && echo 'echo "  Scroll wheel                 Scroll terminal history"' >> /home/vibe/.bashrc \
     && echo 'echo ""' >> /home/vibe/.bashrc \
     && echo 'echo "- Type \"vibe\" to start Mistral Vibe CLI"' >> /home/vibe/.bashrc \
     && echo 'echo "- Your workspace is /home/vibe/workspace"' >> /home/vibe/.bashrc \
