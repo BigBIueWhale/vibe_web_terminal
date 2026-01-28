@@ -11,7 +11,6 @@ import io
 import logging
 import os
 import secrets
-import zipfile
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -722,7 +721,7 @@ async def download_file(session_id: str, path: str):
         raise HTTPException(status_code=404, detail="File not found")
 
     if target_file.is_dir():
-        raise HTTPException(status_code=400, detail="Use download-zip for directories")
+        raise HTTPException(status_code=400, detail="Use download-archive for directories")
 
     return FileResponse(
         path=target_file,
@@ -731,9 +730,11 @@ async def download_file(session_id: str, path: str):
     )
 
 
-@app.get("/session/{session_id}/download-zip")
-async def download_zip(session_id: str, path: str = ""):
-    """Download a directory as a ZIP file."""
+@app.get("/session/{session_id}/download-archive")
+async def download_archive(session_id: str, path: str = ""):
+    """Download a directory as a 7z archive (preserves Unix file permissions)."""
+    import py7zr
+
     session = session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -754,25 +755,25 @@ async def download_zip(session_id: str, path: str = ""):
     if not target_dir.is_dir():
         raise HTTPException(status_code=400, detail="Path is not a directory")
 
-    # Create ZIP in memory
-    zip_buffer = io.BytesIO()
-    zip_name = target_dir.name if clean_path else f"workspace-{session_id[:8]}"
+    # Create 7z archive in memory
+    archive_buffer = io.BytesIO()
+    archive_name = target_dir.name if clean_path else f"workspace-{session_id[:8]}"
 
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+    with py7zr.SevenZipFile(archive_buffer, "w") as szf:
         for file_path in target_dir.rglob("*"):
             if file_path.is_file():
                 try:
-                    arcname = file_path.relative_to(target_dir)
-                    zf.write(file_path, arcname)
+                    arcname = str(file_path.relative_to(target_dir))
+                    szf.write(file_path, arcname)
                 except (PermissionError, OSError) as e:
                     logger.warning(f"Skipping file {file_path}: {e}")
 
-    zip_buffer.seek(0)
+    archive_buffer.seek(0)
 
     return StreamingResponse(
-        zip_buffer,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{zip_name}.zip"'}
+        archive_buffer,
+        media_type="application/x-7z-compressed",
+        headers={"Content-Disposition": f'attachment; filename="{archive_name}.7z"'}
     )
 
 
@@ -824,6 +825,37 @@ async def list_sessions():
         })
 
     return {"count": len(result), "sessions": result}
+
+
+@app.post("/sessions/status")
+async def batch_session_status(request: Request):
+    """Check status of multiple sessions by ID (client-side session list)."""
+    body = await request.json()
+    session_ids = body.get("session_ids", [])
+    if not isinstance(session_ids, list):
+        raise HTTPException(status_code=400, detail="session_ids must be a list")
+    session_ids = session_ids[:50]  # Limit to 50
+
+    result = {}
+    for sid in session_ids:
+        session = session_manager.get_session(sid)
+        if not session:
+            result[sid] = {"status": "gone"}
+            continue
+        try:
+            container = await docker_client.containers.get(session.container_name)
+            info = await container.show()
+            result[sid] = {
+                "status": info["State"]["Status"],
+                "created_at": session.created_at.isoformat(),
+            }
+        except aiodocker.exceptions.DockerError as e:
+            if is_container_not_found(e):
+                result[sid] = {"status": "gone"}
+            else:
+                result[sid] = {"status": "error"}
+
+    return {"sessions": result}
 
 
 # =============================================================================

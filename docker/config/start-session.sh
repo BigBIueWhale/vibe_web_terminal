@@ -9,6 +9,9 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
     # Attach to existing session
     exec tmux attach-session -t "$SESSION_NAME"
 else
-    # Create new session
-    exec tmux new-session -s "$SESSION_NAME"
+    # Create detached, pre-type command, then attach
+    tmux new-session -d -s "$SESSION_NAME"
+    sleep 0.5
+    tmux send-keys -t "$SESSION_NAME" "vibe --auto-approve"
+    exec tmux attach-session -t "$SESSION_NAME"
 fi

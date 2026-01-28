@@ -66,7 +66,7 @@
         }
 
         .features li::before {
-            content: "✓";
+            content: "\2713";
             position: absolute;
             left: 0;
             color: #4ade80;
@@ -106,19 +106,20 @@
         }
 
         .existing-session {
-            margin-top: 2rem;
-            padding-top: 2rem;
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
             border-top: 1px solid rgba(255, 255, 255, 0.1);
+            font-size: 0.9rem;
         }
 
         .existing-session input {
             background: rgba(255, 255, 255, 0.1);
             border: 1px solid rgba(255, 255, 255, 0.2);
-            padding: 0.75rem 1rem;
+            padding: 0.5rem 0.75rem;
             border-radius: 8px;
             color: white;
-            font-size: 1rem;
-            width: 300px;
+            font-size: 0.85rem;
+            width: 250px;
             margin-right: 0.5rem;
         }
 
@@ -130,10 +131,11 @@
             background: transparent;
             border: 1px solid #7c3aed;
             color: #7c3aed;
-            padding: 0.75rem 1.5rem;
+            padding: 0.5rem 1rem;
             border-radius: 8px;
             cursor: pointer;
             transition: all 0.2s;
+            font-size: 0.85rem;
         }
 
         .btn-resume:hover {
@@ -150,12 +152,116 @@
         .error.show {
             display: block;
         }
+
+        /* Session list panel */
+        .sessions-panel {
+            text-align: left;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 1.25rem;
+            margin-bottom: 2rem;
+        }
+
+        .sessions-panel h3 {
+            color: #00d4ff;
+            margin-bottom: 0.75rem;
+            font-size: 1rem;
+        }
+
+        .session-card {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.6rem 0.75rem;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            margin-bottom: 0.5rem;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+
+        .session-card:last-child {
+            margin-bottom: 0;
+        }
+
+        .session-card:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .session-card-left {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .status-dot.running {
+            background: #4ade80;
+        }
+
+        .status-dot.stopped {
+            background: #f87171;
+        }
+
+        .status-dot.unknown {
+            background: #888;
+        }
+
+        .session-card-label {
+            font-family: monospace;
+            font-size: 0.9rem;
+            white-space: nowrap;
+        }
+
+        .session-card-status {
+            color: #888;
+            font-size: 0.8rem;
+            margin-left: 0.5rem;
+        }
+
+        .session-card-time {
+            color: #666;
+            font-size: 0.75rem;
+            margin-left: auto;
+            padding: 0 0.5rem;
+            white-space: nowrap;
+        }
+
+        .btn-delete {
+            background: transparent;
+            border: 1px solid rgba(248, 113, 113, 0.4);
+            color: #f87171;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.75rem;
+            transition: all 0.15s;
+            flex-shrink: 0;
+        }
+
+        .btn-delete:hover {
+            background: rgba(248, 113, 113, 0.2);
+            border-color: #f87171;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Vibe Web Terminal</h1>
         <p class="subtitle">Full Linux terminal with Mistral Vibe CLI in your browser</p>
+
+        <div class="sessions-panel" id="sessionsPanel" style="display: none;">
+            <h3>Your Sessions</h3>
+            <div id="sessionsList"></div>
+        </div>
 
         <div class="features">
             <h3>What you get:</h3>
@@ -176,13 +282,73 @@
         <p class="error" id="error"></p>
 
         <div class="existing-session">
-            <p style="margin-bottom: 1rem; color: #a0a0a0;">Have an existing session?</p>
+            <p style="margin-bottom: 0.75rem; color: #666; font-size: 0.85rem;">Or paste a session ID:</p>
             <input type="text" id="sessionId" placeholder="Paste your session ID">
             <button class="btn-resume" onclick="resumeSession()">Resume</button>
         </div>
     </div>
 
+    <script src="/static/sessions.js"></script>
     <script>
+        function timeAgo(dateStr) {
+            const now = new Date();
+            const then = new Date(dateStr);
+            const diffMs = now - then;
+            const diffMin = Math.floor(diffMs / 60000);
+            if (diffMin < 1) return 'just now';
+            if (diffMin < 60) return diffMin + 'm ago';
+            const diffHr = Math.floor(diffMin / 60);
+            if (diffHr < 24) return diffHr + 'h ago';
+            const diffDay = Math.floor(diffHr / 24);
+            return diffDay + 'd ago';
+        }
+
+        function statusClass(status) {
+            if (status === 'running') return 'running';
+            if (status === 'exited' || status === 'dead' || status === 'gone') return 'stopped';
+            return 'unknown';
+        }
+
+        function renderSessions(sessions) {
+            const panel = document.getElementById('sessionsPanel');
+            const list = document.getElementById('sessionsList');
+
+            if (!sessions || sessions.length === 0) {
+                panel.style.display = 'none';
+                return;
+            }
+
+            panel.style.display = 'block';
+            list.innerHTML = sessions.map(s => {
+                const dotClass = statusClass(s.status);
+                const statusText = s.status === 'running' ? 'Running' : (s.status || 'Unknown');
+                const time = s.created_at ? timeAgo(s.created_at) : timeAgo(s.addedAt);
+                return `
+                    <div class="session-card" data-id="${s.id}">
+                        <div class="session-card-left" onclick="window.location.href='/terminal/${s.id}'">
+                            <span class="status-dot ${dotClass}"></span>
+                            <span class="session-card-label">Session ${s.label}</span>
+                            <span class="session-card-status">${statusText}</span>
+                        </div>
+                        <span class="session-card-time">${time}</span>
+                        <button class="btn-delete" onclick="event.stopPropagation(); deleteSessionCard('${s.id}', this)">Delete</button>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function deleteSessionCard(id, btn) {
+            btn.disabled = true;
+            btn.textContent = '...';
+            await SessionStore.deleteSession(id);
+            const card = btn.closest('.session-card');
+            if (card) card.remove();
+            // Hide panel if empty
+            if (document.getElementById('sessionsList').children.length === 0) {
+                document.getElementById('sessionsPanel').style.display = 'none';
+            }
+        }
+
         async function createSession() {
             const btn = document.getElementById('startBtn');
             const loading = document.getElementById('loading');
@@ -197,6 +363,7 @@
                 const data = await response.json();
 
                 if (response.ok) {
+                    SessionStore.save(data.session_id);
                     window.location.href = data.redirect;
                 } else {
                     throw new Error(data.detail || 'Failed to create session');
@@ -220,6 +387,12 @@
         document.getElementById('sessionId').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') resumeSession();
         });
+
+        // Load sessions on page load
+        (async () => {
+            const sessions = await SessionStore.checkAll();
+            renderSessions(sessions);
+        })();
     </script>
 </body>
 </html>
