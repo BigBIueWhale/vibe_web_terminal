@@ -8,42 +8,29 @@ A web-based terminal service that provides full Linux terminals with Mistral Vib
 - **Vibe CLI Ready** - Pre-configured to work with local Ollama
 - **Isolated Sessions** - Each user gets their own Docker container
 - **File Upload** - Upload files to your workspace via the web UI
-- **Session Persistence** - Return to your session anytime using the URL
-- **Persistent Sessions** - Containers persist until PC restart (workspaces in /tmp)
+- **File Download** - Download files/folders as 7z archives (preserves Unix permissions)
+- **Session Management** - Track, switch, and delete sessions from the browser
+- **Session Persistence** - Containers persist until PC restart (workspaces in /tmp)
+- **Authentication** - Optional username/password and LDAP login for internet-facing deployments
+- **SSL Reverse Proxy** - Built-in Python reverse proxy with automatic Let's Encrypt certificates
 
 ## Architecture
 
+### Local Development (default)
+
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Web Browser                          │
-└──────────────┬────────────────────┬─────────────────────┘
-               │ :8081              │ :17000+
-               ▼                    ▼
-┌──────────────────────┐  ┌────────────────────────────────┐
-│  FastAPI Server      │  │  Docker Container (per user)   │
-│  (Python on HOST)    │  │  ┌──────────────────────────┐  │
-│                      │  │  │ ttyd → bash              │  │
-│  - Serves web UI     │  │  │ Vibe CLI installed       │  │
-│  - Creates containers│  │  │ Workspace mounted        │  │
-│  - Manages sessions  │  │  └──────────────────────────┘  │
-│  - File upload API   │  │                                │
-└──────────────────────┘  └───────────────┬────────────────┘
-        │                                 │
-        │ Docker API                      │ 172.17.0.1:11434
-        ▼                                 ▼
-┌──────────────────────────────────────────────────────────┐
-│                     HOST MACHINE                         │
-│  - Docker daemon                                         │
-│  - Ollama (must listen on 127.0.0.1:11434)               │
-│  - Workspaces at /tmp/vibe-workspaces/                   │
-└──────────────────────────────────────────────────────────┘
+Browser --> localhost:8081 --> FastAPI Server --> Docker Containers
+                                                 (one per user)
 ```
 
-**Key points:**
-- FastAPI server runs on the **host** (not in Docker), manages everything
-- Each user gets their own Docker container with ttyd terminal
-- Containers access host's Ollama via Docker bridge IP (172.17.0.1)
-- Workspaces are mounted from host into containers
+### Production (internet-facing)
+
+```
+Internet --> reverse_proxy.py :8443 (SSL) --> localhost:8081 (FastAPI)
+                                                   |
+                                                   v
+                                            Docker Containers
+```
 
 ## Requirements
 
@@ -73,7 +60,7 @@ newgrp docker
 docker run hello-world
 ```
 
-## Quick Start
+## Quick Start (Local)
 
 ```bash
 # Clone/copy to your server
@@ -87,6 +74,302 @@ cd /path/to/vibe-web-terminal
 ```
 
 Then open http://127.0.0.1:8081 (only accessible from this machine).
+
+---
+
+## Production Deployment (Internet-Facing)
+
+To expose Vibe Web Terminal to the internet, you need two things:
+
+1. **Authentication** — so only authorized users can access the terminal
+2. **SSL reverse proxy** — so traffic is encrypted
+
+### Step 1: Enable Authentication
+
+#### 1a. Create the config file
+
+```bash
+cp auth.yaml.example auth.yaml
+```
+
+#### 1b. Add your first user
+
+```bash
+python3 edit_user.py add admin
+# Password: ********
+# Confirm password: ********
+# User 'admin' added successfully.
+```
+
+#### 1c. Manage users
+
+```bash
+# List all users
+python3 edit_user.py list
+
+# Change a password
+python3 edit_user.py passwd admin
+
+# Remove a user
+python3 edit_user.py remove olduser
+```
+
+#### How auth.yaml looks
+
+When you add users via `edit_user.py`, the file looks like this:
+
+```yaml
+session_secret: 7a3f...long-hex-string...e91b
+session_timeout_hours: 24
+
+users:
+  admin:
+    password_hash: $2b$12$LJ3m5E3rKlGxX9qN7vD.K.abcdefghijklmnopqrstuv
+    created_at: '2025-01-29T12:00:00'
+  alice:
+    password_hash: $2b$12$Mn8p2Q4rSlHzY1wO8vF.A.abcdefghijklmnopqrstuv
+    created_at: '2025-01-29T13:30:00'
+
+ldap:
+  enabled: false
+  server_url: ldap://ldap.example.com:389
+  # ... (see auth.yaml.example for all options)
+```
+
+Passwords are bcrypt-hashed with random salt (12 rounds). Never edit hashes by hand — always use `edit_user.py`.
+
+**Behaviour:**
+- When `auth.yaml` exists: all routes require login.
+- When `auth.yaml` does not exist: no authentication (localhost-only mode, original behaviour).
+- `auth.yaml` is in `.gitignore` — it is never committed.
+
+#### 1d. LDAP / Active Directory (optional)
+
+In addition to local users, you can authenticate against an LDAP server. Local users are checked first; if no match, LDAP is tried.
+
+Edit `auth.yaml` and set `ldap.enabled: true`:
+
+```yaml
+ldap:
+  enabled: true
+
+  # Connection
+  server_url: "ldap://ldap.example.com:389"    # or ldaps://host:636
+  use_starttls: false                           # upgrade plain to TLS
+  tls_verify: true                              # verify server certificate
+  timeout: 10                                   # seconds
+
+  # Service account (for searching users)
+  bind_dn: "cn=readonly,dc=example,dc=com"
+  bind_password: "readonly_password"
+
+  # User search
+  search_base: "ou=people,dc=example,dc=com"
+  search_filter: "(uid={username})"             # {username} is replaced
+  display_name_attr: "cn"
+
+  # Group-based access control (optional)
+  # Leave required_group_dn empty to allow all LDAP users
+  required_group_dn: "cn=vibe-users,ou=groups,dc=example,dc=com"
+  group_search_base: "ou=groups,dc=example,dc=com"
+  group_search_filter: "(&(objectClass=groupOfNames)(member={user_dn}))"
+```
+
+**Active Directory example:**
+
+```yaml
+ldap:
+  enabled: true
+  server_url: "ldaps://dc01.corp.example.com:636"
+  tls_verify: true
+  bind_dn: "CN=svc-vibe,OU=ServiceAccounts,DC=corp,DC=example,DC=com"
+  bind_password: "service_account_password"
+  search_base: "DC=corp,DC=example,DC=com"
+  search_filter: "(sAMAccountName={username})"
+  display_name_attr: "displayName"
+  required_group_dn: "CN=Vibe-Users,OU=Groups,DC=corp,DC=example,DC=com"
+  group_search_base: "DC=corp,DC=example,DC=com"
+  group_search_filter: "(&(objectClass=group)(member={user_dn}))"
+```
+
+Install the LDAP library:
+
+```bash
+pip install ldap3
+```
+
+### Step 2: Set Up the SSL Reverse Proxy
+
+The reverse proxy (`reverse_proxy.py`) is a standalone Python application using `aiohttp`. It handles:
+
+- **HTTPS** on port 8443 — reverse-proxies all traffic to `localhost:8081`
+- **WebSocket** proxying — required for the terminal connections
+- **Security headers** — HSTS, X-Content-Type-Options, X-Frame-Options, etc.
+- **Auto-renewal** — checks certificate expiry every 12 hours (when using `--auto-ssl`)
+
+#### Prerequisites
+
+```bash
+# Install proxy dependencies
+pip install -r proxy_requirements.txt
+
+# Install certbot (for auto-SSL)
+sudo apt install certbot
+# or: pip install certbot
+```
+
+#### Option A: Manual / self-signed certificates (recommended for quick setup)
+
+Generate a self-signed certificate and start immediately (no root required):
+
+```bash
+# Generate a self-signed certificate (valid 1 year)
+mkdir -p certs/self-signed
+openssl req -x509 -newkey rsa:4096 \
+    -keyout certs/self-signed/privkey.pem \
+    -out certs/self-signed/fullchain.pem \
+    -days 365 -nodes -subj "/CN=$(curl -4 -s ifconfig.me)"
+
+# Start the Vibe server (in background or separate terminal)
+./run.sh &
+
+# Start the reverse proxy on port 8443
+python3 reverse_proxy.py \
+    --cert certs/self-signed/fullchain.pem \
+    --key certs/self-signed/privkey.pem
+```
+
+Your site is live at `https://<your-public-ip>:8443`. Browsers will show a
+certificate warning (self-signed) — click "Advanced" > "Proceed" to continue.
+
+#### Option B: Let's Encrypt (requires a domain name + root)
+
+If you have a domain name pointing to this server:
+
+```bash
+# Requires root for ACME challenge on port 80
+sudo python3 reverse_proxy.py \
+    --domain vibe.example.com \
+    --email admin@example.com \
+    --auto-ssl
+```
+
+What happens:
+1. HTTP server starts on port 80 (for ACME challenges only)
+2. Certbot obtains a trusted certificate from Let's Encrypt
+3. HTTPS reverse proxy starts on port 8443
+4. Background task checks for renewal every 12 hours
+5. Your site is live at `https://vibe.example.com:8443`
+
+Certificates are stored in `certs/<domain>/`.
+
+#### Option C: Your own CA-issued certificates
+
+If you have certificates from your CA:
+
+```bash
+python3 reverse_proxy.py \
+    --cert /path/to/fullchain.pem \
+    --key /path/to/privkey.pem
+```
+
+HTTPS reverse proxy starts on port 8443 (override with `--port`).
+
+#### Option C: Development (no SSL)
+
+For testing the proxy locally without SSL:
+
+```bash
+python3 reverse_proxy.py --no-ssl --port 8080
+```
+
+#### Reverse proxy CLI reference
+
+```
+usage: reverse_proxy.py [-h] [--auto-ssl] [--cert CERT] [--key KEY]
+                         [--no-ssl] [--domain DOMAIN] [--email EMAIL]
+                         [--port PORT] [--upstream-port UPSTREAM_PORT]
+
+Options:
+  --auto-ssl          Auto-obtain Let's Encrypt certificate (needs root)
+  --cert FILE         Path to SSL certificate (fullchain.pem)
+  --key FILE          Path to SSL private key (privkey.pem)
+  --no-ssl            No SSL (development only)
+  --domain DOMAIN     Domain for Let's Encrypt
+  --email EMAIL       Email for Let's Encrypt
+  --port PORT         HTTPS port (default: 8443)
+  --upstream-port N   Backend port (default: 8081)
+```
+
+### Step 3: Start Everything
+
+Full production startup sequence:
+
+```bash
+# Terminal 1: Start the Vibe server
+cd /path/to/vibe-web-terminal
+source venv/bin/activate
+./run.sh
+
+# Terminal 2: Start the reverse proxy (port 8443)
+cd /path/to/vibe-web-terminal
+python3 reverse_proxy.py \
+    --cert certs/self-signed/fullchain.pem \
+    --key certs/self-signed/privkey.pem
+```
+
+Your site is available at `https://<your-ip>:8443`.
+
+Or use systemd services for automatic startup (see below).
+
+### Step 4 (optional): systemd Services
+
+Create `/etc/systemd/system/vibe-terminal.service`:
+
+```ini
+[Unit]
+Description=Vibe Web Terminal Server
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/path/to/vibe-web-terminal
+ExecStart=/path/to/vibe-web-terminal/venv/bin/python -m server.app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Create `/etc/systemd/system/vibe-proxy.service`:
+
+```ini
+[Unit]
+Description=Vibe Web Terminal SSL Reverse Proxy
+After=vibe-terminal.service
+Wants=vibe-terminal.service
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/vibe-web-terminal
+ExecStart=/usr/bin/python3 /path/to/vibe-web-terminal/reverse_proxy.py --cert certs/self-signed/fullchain.pem --key certs/self-signed/privkey.pem
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable vibe-terminal vibe-proxy
+sudo systemctl start vibe-terminal vibe-proxy
+```
+
+---
 
 ## Offline / Internal Network Deployment
 
@@ -130,29 +413,39 @@ pip install -r server/requirements.txt
 
 ```
 vibe-web-terminal/
-├── setup.sh              # One-time setup script
-├── run.sh                # Start the server
-├── stop.sh               # Stop all containers and clean up
+├── setup.sh                # One-time setup script
+├── run.sh                  # Start the server
+├── stop.sh                 # Stop all containers and clean up
+├── edit_user.py            # CLI tool to manage local users
+├── auth.yaml.example       # Example auth configuration (committed)
+├── auth.yaml               # Actual auth config (gitignored)
+├── reverse_proxy.py        # SSL reverse proxy for production
+├── proxy_requirements.txt  # Dependencies for reverse proxy
 ├── docker/
-│   ├── Dockerfile        # Terminal container image
+│   ├── Dockerfile          # Terminal container image
 │   └── config/
-│       ├── vibe-config.toml  # Vibe CLI configuration
-│       └── vibe-env          # Vibe CLI environment
+│       ├── start-session.sh    # tmux session startup
+│       ├── vibe-config.toml    # Vibe CLI configuration
+│       └── vibe-env            # Vibe CLI environment
 └── server/
-    ├── app.py            # FastAPI server
-    ├── requirements.txt  # Python dependencies
+    ├── app.py              # FastAPI server
+    ├── auth.py             # Authentication module
+    ├── requirements.txt    # Python dependencies
+    ├── static/
+    │   └── sessions.js     # Client-side session management
     └── templates/
-        ├── index.html    # Landing page
-        └── terminal.html # Terminal page with file upload
+        ├── index.html      # Landing page with session list
+        ├── terminal.html   # Terminal page with file browser
+        └── login.html      # Login page (when auth enabled)
 ```
 
 ## Configuration
 
 ### Server Port
 
-Edit `server/app.py`, change the port in the last line:
+Edit `server/app.py`, change `SERVER_PORT`:
 ```python
-uvicorn.run(app, host="127.0.0.1", port=8080)
+SERVER_PORT = 8081
 ```
 
 ### Session Lifetime
@@ -171,10 +464,10 @@ api_base = "http://YOUR_OLLAMA_IP:11434/v1"
 
 ### Container Resources
 
-In `server/app.py`, modify the `create_container` function:
+In `server/app.py`, modify the container config in `_create_container`:
 ```python
-mem_limit="2g",      # Memory limit
-cpu_quota=100000,    # CPU limit (100000 = 1 CPU)
+"Memory": 2147483648,   # 2GB
+"CpuQuota": 100000,     # 1 CPU
 ```
 
 ## API Endpoints
@@ -182,29 +475,42 @@ cpu_quota=100000,    # CPU limit (100000 = 1 CPU)
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | Landing page |
+| `/login` | GET/POST | Login page (when auth enabled) |
+| `/logout` | GET | Destroy session and redirect to login |
 | `/terminal/{session_id}` | GET | Terminal page for a session |
 | `/session/new` | POST | Create new session |
 | `/session/{id}/status` | GET | Get session status |
 | `/session/{id}/upload` | POST | Upload file to workspace |
-| `/session/{id}/files` | GET | List workspace files |
+| `/session/{id}/browse` | GET | Browse workspace files |
+| `/session/{id}/download` | GET | Download a single file |
+| `/session/{id}/download-archive` | GET | Download directory as .7z |
 | `/session/{id}` | DELETE | Delete session |
 | `/sessions` | GET | List all sessions (admin) |
+| `/sessions/status` | POST | Batch status check for client session list |
 
 ## Security Considerations
 
-⚠️ **IMPORTANT: This server provides UNAUTHENTICATED SHELL ACCESS**
+### Without `auth.yaml` (local mode)
 
-**By design, the server ONLY binds to localhost (127.0.0.1):**
-- It is NOT accessible from other machines on your network
-- It is NOT accessible from the internet
-- Only users logged into this machine can access it
+- Server binds to `localhost` (127.0.0.1) only
+- Not accessible from the network or internet
+- No authentication required
+- Server **refuses to start** if configured to bind to `0.0.0.0`
 
-**The server will REFUSE to start if configured to bind to 0.0.0.0 or any public IP.**
+### With `auth.yaml` (production mode)
 
-Additional security notes:
-- Containers have limited resources but can still run arbitrary code
-- The "password" for sudo is publicly known ("password")
+- All routes require login (username/password)
+- Session cookies are `HttpOnly`, `Secure`, `SameSite=Strict`
+- Passwords stored as bcrypt hashes with random salt
+- LDAP authentication supported for enterprise environments
+- Use the SSL reverse proxy for encrypted connections
+
+### General
+
+- Containers have limited resources (2GB RAM, 1 CPU) but can run arbitrary code
+- The container sudo password is "password" (publicly known)
 - Network access from containers is limited but not fully isolated
+- Session IDs use 512 bits of cryptographic entropy
 
 ## Networking: Ollama Load Balancer Setup
 
@@ -266,6 +572,27 @@ Check Docker logs:
 ```bash
 docker logs vibe-session-XXXXX
 ```
+
+### Let's Encrypt certificate fails (--auto-ssl)
+
+Ensure:
+1. DNS for your domain points to this server's public IP
+2. Port 80 is accessible from the internet (required for ACME HTTP-01 challenge)
+3. `certbot` is installed: `sudo apt install certbot`
+4. You're running with `sudo` (port 80 requires root)
+
+Check manually:
+```bash
+# View certbot logs
+sudo cat /var/log/letsencrypt/letsencrypt.log
+```
+
+### Login not working
+
+- Check `auth.yaml` exists and has users: `python3 edit_user.py list`
+- Verify password: remove and re-add the user with `edit_user.py`
+- For LDAP issues, check server logs for detailed error messages
+- Ensure `ldap3` is installed if using LDAP: `pip install ldap3`
 
 ## License
 

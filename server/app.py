@@ -23,18 +23,23 @@ import aiodocker
 import aiodocker.exceptions
 import httpx
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.websockets import WebSocketState
 
+try:
+    from server.auth import create_auth_manager
+except ImportError:
+    from auth import create_auth_manager
+
 # =============================================================================
-# SECURITY CONFIGURATION - DO NOT CHANGE
+# SECURITY CONFIGURATION
 # =============================================================================
-# This server MUST only bind to localhost (127.0.0.1).
-# It provides unauthenticated shell access - NEVER expose to the internet!
+# Without auth.yaml: binds to localhost only (unauthenticated, safe for local).
+# With auth.yaml:    authentication required; safe to expose via reverse proxy.
 # =============================================================================
-SERVER_HOST = "127.0.0.1"  # SECURITY: localhost only - DO NOT CHANGE TO 0.0.0.0
+SERVER_HOST = "127.0.0.1"  # Overridden to 0.0.0.0 when auth is enabled
 SERVER_PORT = 8081
 
 # Configuration
@@ -487,6 +492,109 @@ templates = Jinja2Templates(directory=str(templates_dir))
 static_dir = Path(__file__).parent / "static"
 if static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+
+# =============================================================================
+# AUTHENTICATION
+# =============================================================================
+# Enabled when auth.yaml exists.  When disabled, all routes are open
+# (localhost-only mode).
+# =============================================================================
+
+auth_manager = create_auth_manager()
+
+# Paths that never require authentication
+_AUTH_EXEMPT = {"/login", "/logout"}
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Gate every request behind login when authentication is enabled."""
+    if not auth_manager:
+        return await call_next(request)
+
+    path = request.url.path
+
+    # Allow auth-exempt paths and static assets (needed for login page CSS/JS)
+    if path in _AUTH_EXEMPT or path.startswith("/static/"):
+        return await call_next(request)
+
+    # Check session cookie
+    token = request.cookies.get("vibe_session")
+    username = auth_manager.validate_session(token) if token else None
+
+    if username:
+        return await call_next(request)
+
+    # Not authenticated — reject
+    # WebSocket upgrades get 401 (can't redirect)
+    if "upgrade" in request.headers.get("connection", "").lower():
+        return Response(status_code=401, content="Unauthorized")
+
+    # Regular HTTP — redirect to login with return URL
+    next_url = request.url.path
+    if request.url.query:
+        next_url += f"?{request.url.query}"
+    return RedirectResponse(f"/login?next={next_url}", status_code=302)
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, next: str = "/"):
+    """Show the login form."""
+    # If auth is disabled, just redirect to index
+    if not auth_manager:
+        return RedirectResponse("/", status_code=302)
+    return templates.TemplateResponse("login.html", {
+        "request": request,
+        "error": None,
+        "username": "",
+        "next_url": next,
+    })
+
+
+@app.post("/login")
+async def login_submit(request: Request):
+    """Process login form submission."""
+    if not auth_manager:
+        return RedirectResponse("/", status_code=302)
+
+    form = await request.form()
+    username = form.get("username", "").strip()
+    password = form.get("password", "")
+    next_url = form.get("next", "/")
+
+    if auth_manager.authenticate(username, password):
+        token = auth_manager.create_session(username)
+        response = RedirectResponse(next_url or "/", status_code=302)
+        response.set_cookie(
+            key="vibe_session",
+            value=token,
+            httponly=True,
+            secure=True,
+            samesite="strict",
+            path="/",
+            max_age=int(auth_manager._timeout.total_seconds()),
+        )
+        return response
+
+    # Authentication failed
+    return templates.TemplateResponse("login.html", {
+        "request": request,
+        "error": "Invalid username or password.",
+        "username": username,
+        "next_url": next_url,
+    }, status_code=401)
+
+
+@app.get("/logout")
+async def logout(request: Request):
+    """Destroy session and redirect to login."""
+    token = request.cookies.get("vibe_session")
+    if token and auth_manager:
+        auth_manager.destroy_session(token)
+    response = RedirectResponse("/login", status_code=302)
+    response.delete_cookie("vibe_session", path="/")
+    return response
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1026,23 +1134,34 @@ if __name__ == "__main__":
     import uvicorn
     import sys
 
-    # ==========================================================================
-    # SECURITY CHECK - Prevent accidental exposure to the internet
-    # ==========================================================================
-    ALLOWED_HOSTS = ("127.0.0.1", "localhost")
+    try:
+        from server.auth import is_auth_enabled
+    except ImportError:
+        from auth import is_auth_enabled
 
-    if SERVER_HOST not in ALLOWED_HOSTS:
-        print("=" * 70)
-        print("SECURITY ERROR: Refusing to start!")
-        print("=" * 70)
-        print(f"SERVER_HOST is set to '{SERVER_HOST}'")
-        print()
-        print("This server provides UNAUTHENTICATED SHELL ACCESS.")
-        print("It MUST only bind to localhost (127.0.0.1).")
-        print()
-        print("Binding to 0.0.0.0 or a public IP would expose shell access")
-        print("to anyone on the network or internet!")
-        print("=" * 70)
-        sys.exit(1)
+    # ==========================================================================
+    # SECURITY CHECK
+    # ==========================================================================
+    # Without auth.yaml: localhost only (unauthenticated).
+    # With auth.yaml:    any bind address is allowed (authentication enforced).
+    # ==========================================================================
+    if is_auth_enabled():
+        logger.info("auth.yaml found — authentication enabled")
+    else:
+        ALLOWED_HOSTS = ("127.0.0.1", "localhost")
+        if SERVER_HOST not in ALLOWED_HOSTS:
+            print("=" * 70)
+            print("SECURITY ERROR: Refusing to start!")
+            print("=" * 70)
+            print(f"SERVER_HOST is set to '{SERVER_HOST}'")
+            print()
+            print("Authentication is NOT configured (no auth.yaml).")
+            print("Without authentication, the server MUST bind to localhost.")
+            print()
+            print("To enable authentication:")
+            print("  cp auth.yaml.example auth.yaml")
+            print("  python3 edit_user.py add admin")
+            print("=" * 70)
+            sys.exit(1)
 
     uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT)

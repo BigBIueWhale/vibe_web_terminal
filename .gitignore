@@ -23,3 +23,10 @@ Thumbs.db
 # Project specific
 /tmp/
 *.log
+
+# Authentication (contains password hashes and secrets)
+auth.yaml
+
+# SSL certificates and ACME challenge files
+certs/
+acme-webroot/

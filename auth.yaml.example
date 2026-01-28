@@ -1,0 +1,126 @@
+# =============================================================================
+# Vibe Web Terminal — Authentication Configuration
+# =============================================================================
+#
+# Copy this file to auth.yaml to enable authentication:
+#
+#     cp auth.yaml.example auth.yaml
+#     python3 edit_user.py add admin
+#
+# When auth.yaml exists, ALL routes require login.
+# When auth.yaml does NOT exist, the server runs without authentication
+# (localhost-only mode).
+#
+# WARNING: Do not commit auth.yaml to version control.
+#          It contains password hashes and secrets.
+# =============================================================================
+
+# Secret key for signing session cookies.
+# Auto-generated on first run of edit_user.py if left as "CHANGE_ME".
+# To generate manually:
+#     python3 -c "import secrets; print(secrets.token_hex(32))"
+session_secret: "CHANGE_ME"
+
+# How long login sessions last before requiring re-authentication (hours).
+session_timeout_hours: 24
+
+# =============================================================================
+# Local Users
+# =============================================================================
+# Managed via edit_user.py — do NOT edit password hashes by hand.
+#
+#   python3 edit_user.py add <username>       Add a user (prompts for password)
+#   python3 edit_user.py list                 List all users
+#   python3 edit_user.py passwd <username>    Change a user's password
+#   python3 edit_user.py remove <username>    Remove a user
+#
+# Passwords are stored as bcrypt hashes with per-user random salt.
+# Example entry (do not copy — use edit_user.py):
+#
+#   users:
+#     admin:
+#       password_hash: "$2b$12$LJ3m5E3rKlG..."
+#       created_at: "2025-01-29T12:00:00"
+#
+users: {}
+
+# =============================================================================
+# LDAP / Active Directory Authentication (optional)
+# =============================================================================
+# When enabled, users can log in with LDAP credentials IN ADDITION to
+# local users above. Local users are checked first; if no match, LDAP
+# is tried.
+#
+# Supports:
+#   - Plain LDAP (ldap://) and LDAP-over-SSL (ldaps://)
+#   - STARTTLS upgrade on plain connections
+#   - TLS certificate verification (recommended for production)
+#   - Bind-then-search authentication pattern
+#   - Optional group-based access control
+#   - Configurable attribute mapping
+#   - Connection timeout
+#
+# Tested with:
+#   - OpenLDAP
+#   - Microsoft Active Directory
+#   - FreeIPA / Red Hat IdM
+#
+# Requires: pip install ldap3
+# =============================================================================
+ldap:
+  enabled: false
+
+  # ---- Connection ----
+  # LDAP server URL.
+  #   ldap://host:389    Plain (use with use_starttls: true for security)
+  #   ldaps://host:636   SSL/TLS
+  server_url: "ldap://ldap.example.com:389"
+
+  # Upgrade plain connection to TLS via STARTTLS extension.
+  # Ignored when using ldaps:// (already encrypted).
+  use_starttls: false
+
+  # Verify the server's TLS certificate.
+  # Set to false only for testing with self-signed certs.
+  tls_verify: true
+
+  # Connection and response timeout in seconds.
+  timeout: 10
+
+  # ---- Bind Credentials ----
+  # Service account used to SEARCH for users.
+  # This account needs read access to the user search base.
+  # For Active Directory, use: "CN=svc-vibe,OU=ServiceAccounts,DC=corp,DC=com"
+  bind_dn: "cn=readonly,dc=example,dc=com"
+  bind_password: "readonly_password"
+
+  # ---- User Search ----
+  # Base DN where user accounts live.
+  search_base: "ou=people,dc=example,dc=com"
+
+  # Filter to locate the user. {username} is replaced with the login input.
+  # OpenLDAP:           "(uid={username})"
+  # Active Directory:   "(sAMAccountName={username})"
+  # By email:           "(mail={username})"
+  search_filter: "(uid={username})"
+
+  # LDAP attribute that contains the user's display name.
+  display_name_attr: "cn"
+
+  # ---- Group-Based Access Control (optional) ----
+  # When required_group_dn is set, only members of that group can log in.
+  # Leave empty ("") to allow ALL authenticated LDAP users.
+  #
+  # Example for OpenLDAP (groupOfNames):
+  #   required_group_dn: "cn=vibe-users,ou=groups,dc=example,dc=com"
+  #   group_search_base: "ou=groups,dc=example,dc=com"
+  #   group_search_filter: "(&(objectClass=groupOfNames)(member={user_dn}))"
+  #
+  # Example for Active Directory (memberOf on user object):
+  #   required_group_dn: "CN=Vibe-Users,OU=Groups,DC=corp,DC=com"
+  #   group_search_base: "DC=corp,DC=com"
+  #   group_search_filter: "(&(objectClass=group)(member={user_dn}))"
+  #
+  required_group_dn: ""
+  group_search_base: "ou=groups,dc=example,dc=com"
+  group_search_filter: "(&(objectClass=groupOfNames)(member={user_dn}))"
