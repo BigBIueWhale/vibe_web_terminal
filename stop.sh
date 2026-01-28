@@ -1,12 +1,10 @@
 #!/bin/bash
-# Stop all vibe-terminal containers and clean up
+# Stop the Vibe Terminal server and proxy (does NOT remove containers or data).
+# To fully clean up containers and workspaces, use: ./cleanup-sessions.sh
 
-echo "Stopping all Vibe Terminal containers..."
+echo "Stopping Vibe Terminal server and proxy..."
+pkill -f "python3.*server/app.py" 2>/dev/null || true
+pkill -f "python3.*reverse_proxy.py" 2>/dev/null || true
 
-# Stop and remove all vibe-session containers
-docker ps -a --filter "name=vibe-session-" --format "{{.ID}}" | xargs -r docker rm -f
-
-echo "Cleaning up workspaces..."
-rm -rf /tmp/vibe-workspaces/*
-
-echo "Done."
+echo "Done. Containers are still running (persistent by design)."
+echo "To remove all session containers and data: ./cleanup-sessions.sh"

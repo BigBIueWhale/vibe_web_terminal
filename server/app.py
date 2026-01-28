@@ -8,6 +8,7 @@ Each user gets a unique session with a persistent container they can return to.
 
 import asyncio
 import io
+import json
 import logging
 import os
 import secrets
@@ -45,13 +46,17 @@ SERVER_PORT = 8081
 # Configuration
 DOCKER_IMAGE = "vibe-terminal:latest"
 CONTAINER_PREFIX = "vibe-session-"
-# No automatic cleanup - containers persist until PC restart
-# Users can manually delete via DELETE /session/{id} or ./stop.sh
+MAX_SESSIONS_PER_USER = 3
+# No automatic cleanup - containers persist until user deletes them
 SESSION_TIMEOUT_HOURS = None  # Disabled
-CLEANUP_INTERVAL_SECONDS = 300  # 5 minutes (only cleans up stopped containers)
+CLEANUP_INTERVAL_SECONDS = 300  # 5 minutes (only cleans up dead containers)
 HOST_PORT_START = 17000
 HOST_PORT_END = 18000
-WORKSPACE_BASE = Path("/tmp/vibe-workspaces")  # /tmp is cleared on reboot
+
+# Data directory: persistent storage within the project (survives reboots)
+DATA_DIR = Path(__file__).parent.parent / "data"
+WORKSPACE_BASE = DATA_DIR / "workspaces"
+OWNER_STORE_PATH = DATA_DIR / "session_owners.json"
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -242,6 +247,7 @@ class SessionManager:
                 "Memory": 2147483648,  # 2GB
                 "CpuPeriod": 100000,
                 "CpuQuota": 100000,  # 1 CPU
+                "RestartPolicy": {"Name": "unless-stopped"},
             },
         }
 
@@ -268,9 +274,9 @@ class SessionManager:
         async with session._lock:
             session.release_ref()
 
-    async def delete_session(self, session_id: str) -> bool:
+    async def delete_session(self, session_id: str, force: bool = False) -> bool:
         """
-        Delete session if ref_count=0 (prevents use-after-delete).
+        Delete session. If force=True, bypass ref_count check.
 
         Returns True if deleted, False if not found or has active connections.
         """
@@ -279,7 +285,7 @@ class SessionManager:
             if not session:
                 return False
             async with session._lock:
-                if not session.can_delete():
+                if not force and not session.can_delete():
                     return False
                 session._state = SessionState.DELETING
                 self._sessions.pop(session_id)
@@ -321,8 +327,9 @@ class SessionManager:
     async def recover_existing_sessions(self) -> None:
         """Discover and re-register containers from previous server runs.
 
-        Running containers with the CONTAINER_PREFIX are recovered as READY
-        sessions. Stopped/dead containers are removed.
+        Running containers are recovered as READY sessions.
+        Stopped containers are restarted (they persist across reboots).
+        Containers that fail to restart are removed.
         """
         try:
             containers = await docker_client.containers.list(
@@ -338,18 +345,14 @@ class SessionManager:
                 name = info["Name"].lstrip("/")
                 status = info["State"]["Status"]
 
-                # Remove stopped/dead containers
-                if status not in ("running",):
-                    logger.info(f"Removing non-running container {name} (status: {status})")
-                    await container.delete(force=True)
-                    continue
-
-                # Extract session ID from workspace bind mount
+                # Extract session ID and workspace path from bind mount
                 session_id = None
+                workspace_path = None
                 binds = info.get("HostConfig", {}).get("Binds", [])
                 for bind in binds:
                     parts = bind.split(":")
                     if len(parts) >= 2 and "/home/vibe/workspace" in parts[1]:
+                        workspace_path = parts[0]
                         session_id = Path(parts[0]).name
                         break
 
@@ -357,6 +360,24 @@ class SessionManager:
                     logger.warning(f"Cannot determine session ID for container {name}, removing")
                     await container.delete(force=True)
                     continue
+
+                # Restart stopped/exited containers instead of removing them
+                if status != "running":
+                    logger.info(f"Restarting stopped container {name} (status: {status})")
+                    try:
+                        await container.start()
+                        await asyncio.sleep(2)
+                        info = await container.show()
+                        status = info["State"]["Status"]
+                        if status != "running":
+                            logger.warning(f"Container {name} failed to restart (status: {status}), removing")
+                            await container.delete(force=True)
+                            continue
+                        logger.info(f"Container {name} restarted successfully")
+                    except Exception as e:
+                        logger.error(f"Failed to restart container {name}: {e}, removing")
+                        await container.delete(force=True)
+                        continue
 
                 # Extract port from PortBindings
                 port = None
@@ -371,10 +392,8 @@ class SessionManager:
                     await container.delete(force=True)
                     continue
 
-                workspace_dir = WORKSPACE_BASE / session_id
                 created_str = info.get("Created", "")
                 try:
-                    # Docker returns ISO format like "2025-01-28T12:00:00.000000000Z"
                     created_at = datetime.fromisoformat(created_str.replace("Z", "+00:00")).replace(tzinfo=None)
                 except (ValueError, AttributeError):
                     created_at = datetime.now()
@@ -384,7 +403,7 @@ class SessionManager:
                     container_id=container.id,
                     container_name=name,
                     port=port,
-                    workspace=str(workspace_dir),
+                    workspace=workspace_path,
                     created_at=created_at,
                     last_accessed=datetime.now(),
                 )
@@ -406,8 +425,68 @@ class SessionManager:
         return list(self._sessions.values())
 
 
-# Global session manager
+# =============================================================================
+# SESSION OWNERSHIP
+# =============================================================================
+# Persists which user owns which session. Stored in data/session_owners.json.
+# When auth is disabled, all sessions belong to "__anonymous__".
+# =============================================================================
+
+
+class SessionOwnerStore:
+    """Persists session-to-user ownership mapping on disk."""
+
+    def __init__(self, path: Path):
+        self._path = path
+        self._owners: dict[str, str] = {}
+        self._load()
+
+    def _load(self):
+        if self._path.exists():
+            try:
+                with open(self._path) as f:
+                    self._owners = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                self._owners = {}
+
+    def _save(self):
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self._path.with_suffix(".tmp")
+        with open(tmp_path, "w") as f:
+            json.dump(self._owners, f, indent=2)
+        tmp_path.replace(self._path)
+
+    def assign(self, session_id: str, username: str):
+        """Record that username owns session_id."""
+        self._owners[session_id] = username
+        self._save()
+
+    def remove(self, session_id: str):
+        """Remove ownership record."""
+        if session_id in self._owners:
+            del self._owners[session_id]
+            self._save()
+
+    def get_owner(self, session_id: str) -> str | None:
+        """Get the username that owns a session, or None."""
+        return self._owners.get(session_id)
+
+    def get_user_sessions(self, username: str) -> list[str]:
+        """Get all session IDs owned by a user."""
+        return [sid for sid, owner in self._owners.items() if owner == username]
+
+    def count_user_sessions(self, username: str) -> int:
+        """Count sessions owned by a user."""
+        return sum(1 for owner in self._owners.values() if owner == username)
+
+    def all_session_ids(self) -> set[str]:
+        """Get all tracked session IDs."""
+        return set(self._owners.keys())
+
+
+# Global instances
 session_manager = SessionManager()
+owner_store: SessionOwnerStore | None = None  # Initialized in lifespan
 
 
 def generate_session_id() -> str:
@@ -420,11 +499,26 @@ def get_container_name(session_id: str) -> str:
     return f"{CONTAINER_PREFIX}{session_id[:12]}"
 
 
+def get_current_user(request: Request) -> str:
+    """Get the authenticated username from the request, or '__anonymous__'."""
+    return getattr(request.state, "username", "__anonymous__")
+
+
+def verify_session_ownership(request: Request, session_id: str):
+    """Verify the current user owns the session. Raises HTTPException if not."""
+    username = get_current_user(request)
+    session_owner = owner_store.get_owner(session_id)
+    if session_owner is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session_owner != username:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+
 async def cleanup_old_sessions():
-    """Clean up stopped/dead containers. No time-based expiry - containers persist until reboot."""
+    """Clean up dead containers and orphaned owner store entries."""
     while True:
         try:
-            # Only clean up containers that have stopped/died (not time-based)
+            # Clean up containers that have died
             for session in session_manager.list_sessions():
                 if session._state != SessionState.READY:
                     continue
@@ -432,13 +526,36 @@ async def cleanup_old_sessions():
                     container = await docker_client.containers.get(session.container_name)
                     info = await container.show()
                     if info["State"]["Status"] in ("exited", "dead"):
-                        # Container stopped - clean up
-                        await session_manager.delete_session(session.session_id)
-                        logger.info(f"Cleaned up stopped container for session {session.session_id}")
+                        # Try to restart
+                        try:
+                            await container.start()
+                            logger.info(f"Restarted dead container for session {session.session_id}")
+                        except Exception:
+                            # Can't restart - clean up
+                            await session_manager.delete_session(session.session_id, force=True)
+                            if owner_store:
+                                owner_store.remove(session.session_id)
+                            logger.info(f"Cleaned up dead container for session {session.session_id}")
                 except aiodocker.exceptions.DockerError as e:
                     if is_container_not_found(e):
-                        # Container gone - clean up session
-                        await session_manager.delete_session(session.session_id)
+                        await session_manager.delete_session(session.session_id, force=True)
+                        if owner_store:
+                            owner_store.remove(session.session_id)
+
+            # Clean up orphaned owner store entries (owner store has ID but no session)
+            if owner_store:
+                for sid in list(owner_store.all_session_ids()):
+                    if session_manager.get_session(sid) is None:
+                        # Session not in manager - check if container exists
+                        container_name = get_container_name(sid)
+                        try:
+                            await docker_client.containers.get(container_name)
+                            # Container exists but not in session manager - will be
+                            # recovered on next startup. Leave owner entry alone.
+                        except aiodocker.exceptions.DockerError:
+                            # Container truly gone - remove owner entry
+                            owner_store.remove(sid)
+                            logger.info(f"Removed orphaned owner entry for session {sid[:12]}")
 
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
@@ -449,10 +566,12 @@ async def cleanup_old_sessions():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    global _http_client, docker_client
+    global _http_client, docker_client, owner_store
     # Startup
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     WORKSPACE_BASE.mkdir(parents=True, exist_ok=True)
-    docker_client = aiodocker.Docker()  # Initialize async client
+    owner_store = SessionOwnerStore(OWNER_STORE_PATH)
+    docker_client = aiodocker.Docker()
     await session_manager.recover_existing_sessions()
     cleanup_task = asyncio.create_task(cleanup_old_sessions())
     logger.info("Vibe Web Terminal server started")
@@ -466,7 +585,7 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
     if docker_client is not None:
-        await docker_client.close()  # Close async client
+        await docker_client.close()
     if _http_client is not None:
         await _http_client.aclose()
         _http_client = None
@@ -511,6 +630,8 @@ _AUTH_EXEMPT = {"/login", "/logout"}
 async def auth_middleware(request: Request, call_next):
     """Gate every request behind login when authentication is enabled."""
     if not auth_manager:
+        # No auth — single anonymous user
+        request.state.username = "__anonymous__"
         return await call_next(request)
 
     path = request.url.path
@@ -524,6 +645,7 @@ async def auth_middleware(request: Request, call_next):
     username = auth_manager.validate_session(token) if token else None
 
     if username:
+        request.state.username = username
         return await call_next(request)
 
     # Not authenticated — reject
@@ -604,11 +726,22 @@ async def index(request: Request):
 
 
 @app.post("/session/new")
-async def create_new_session():
-    """Create a new terminal session."""
+async def create_new_session(request: Request):
+    """Create a new terminal session for the current user."""
+    username = get_current_user(request)
+
+    # Enforce max sessions per user
+    count = owner_store.count_user_sessions(username)
+    if count >= MAX_SESSIONS_PER_USER:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Maximum {MAX_SESSIONS_PER_USER} sessions reached. Delete a session first."
+        )
+
     session_id = generate_session_id()
     try:
         await session_manager.get_or_create_session(session_id)
+        owner_store.assign(session_id, username)
         return JSONResponse({
             "session_id": session_id,
             "redirect": f"/terminal/{session_id}"
@@ -619,7 +752,10 @@ async def create_new_session():
 
 @app.get("/terminal/{session_id}", response_class=HTMLResponse)
 async def terminal_page(request: Request, session_id: str):
-    """Terminal page for a session."""
+    """Terminal page for a session. Refuses if session doesn't exist or isn't owned."""
+    # Check ownership — refuses non-existent and non-owned sessions
+    verify_session_ownership(request, session_id)
+
     try:
         session = await session_manager.get_or_create_session(session_id)
         return templates.TemplateResponse("terminal.html", {
@@ -632,8 +768,10 @@ async def terminal_page(request: Request, session_id: str):
 
 
 @app.get("/session/{session_id}/status")
-async def session_status(session_id: str):
+async def session_status(request: Request, session_id: str):
     """Get session status."""
+    verify_session_ownership(request, session_id)
+
     session = session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -658,6 +796,7 @@ async def session_status(session_id: str):
 
 @app.post("/session/{session_id}/upload")
 async def upload_file(
+    request: Request,
     session_id: str,
     file: UploadFile = File(...),
     path: Optional[str] = None
@@ -669,6 +808,8 @@ async def upload_file(
         file: The file to upload
         path: Optional relative path (for folder uploads, preserves structure)
     """
+    verify_session_ownership(request, session_id)
+
     session = session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -719,8 +860,10 @@ async def upload_file(
 
 
 @app.get("/session/{session_id}/files")
-async def list_files(session_id: str):
+async def list_files(request: Request, session_id: str):
     """List files in the session workspace."""
+    verify_session_ownership(request, session_id)
+
     session = session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -741,8 +884,10 @@ async def list_files(session_id: str):
 
 
 @app.get("/session/{session_id}/browse")
-async def browse_files(session_id: str, path: str = ""):
+async def browse_files(request: Request, session_id: str, path: str = ""):
     """Browse files in the session workspace with subdirectory support."""
+    verify_session_ownership(request, session_id)
+
     session = session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -806,8 +951,10 @@ def get_dir_size(path: Path) -> int:
 
 
 @app.get("/session/{session_id}/download")
-async def download_file(session_id: str, path: str):
+async def download_file(request: Request, session_id: str, path: str):
     """Download a single file from the session workspace."""
+    verify_session_ownership(request, session_id)
+
     session = session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -839,9 +986,11 @@ async def download_file(session_id: str, path: str):
 
 
 @app.get("/session/{session_id}/download-archive")
-async def download_archive(session_id: str, path: str = ""):
+async def download_archive(request: Request, session_id: str, path: str = ""):
     """Download a directory as a 7z archive (preserves Unix file permissions)."""
     import py7zr
+
+    verify_session_ownership(request, session_id)
 
     session = session_manager.get_session(session_id)
     if not session:
@@ -886,24 +1035,66 @@ async def download_archive(session_id: str, path: str = ""):
 
 
 @app.delete("/session/{session_id}")
-async def delete_session(session_id: str):
-    """Delete a session and its container."""
+async def delete_session(request: Request, session_id: str):
+    """Delete a session and its container. Only the owner can delete."""
+    verify_session_ownership(request, session_id)
+
+    # Force-delete regardless of active connections
     session = session_manager.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    if session:
+        await session_manager.delete_session(session_id, force=True)
 
-    # Check if there are active WebSocket connections
-    if session._ref_count > 0:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Session has {session._ref_count} active connections"
-        )
-
-    deleted = await session_manager.delete_session(session_id)
-    if not deleted:
-        raise HTTPException(status_code=409, detail="Session could not be deleted")
-
+    owner_store.remove(session_id)
     return {"status": "deleted"}
+
+
+@app.get("/my/sessions")
+async def my_sessions(request: Request):
+    """List the current user's sessions with live status."""
+    username = get_current_user(request)
+    session_ids = owner_store.get_user_sessions(username)
+
+    result = []
+    prune_ids = []
+
+    for sid in session_ids:
+        info = {
+            "id": sid,
+            "label": sid[:8],
+            "status": "gone",
+            "created_at": None,
+        }
+
+        session = session_manager.get_session(sid)
+        if session:
+            try:
+                container = await docker_client.containers.get(session.container_name)
+                container_info = await container.show()
+                info["status"] = container_info["State"]["Status"]
+                info["created_at"] = session.created_at.isoformat()
+            except aiodocker.exceptions.DockerError:
+                info["status"] = "gone"
+
+        if info["status"] == "gone":
+            prune_ids.append(sid)
+            continue
+
+        result.append(info)
+
+    # Auto-prune gone sessions from owner store
+    for sid in prune_ids:
+        owner_store.remove(sid)
+
+    # Sort: running first, then by created_at descending
+    result.sort(key=lambda s: (
+        0 if s["status"] == "running" else 1,
+        s.get("created_at") or "",
+    ))
+
+    return {
+        "sessions": result,
+        "max_sessions": MAX_SESSIONS_PER_USER,
+    }
 
 
 @app.get("/sessions")
@@ -935,37 +1126,6 @@ async def list_sessions():
     return {"count": len(result), "sessions": result}
 
 
-@app.post("/sessions/status")
-async def batch_session_status(request: Request):
-    """Check status of multiple sessions by ID (client-side session list)."""
-    body = await request.json()
-    session_ids = body.get("session_ids", [])
-    if not isinstance(session_ids, list):
-        raise HTTPException(status_code=400, detail="session_ids must be a list")
-    session_ids = session_ids[:50]  # Limit to 50
-
-    result = {}
-    for sid in session_ids:
-        session = session_manager.get_session(sid)
-        if not session:
-            result[sid] = {"status": "gone"}
-            continue
-        try:
-            container = await docker_client.containers.get(session.container_name)
-            info = await container.show()
-            result[sid] = {
-                "status": info["State"]["Status"],
-                "created_at": session.created_at.isoformat(),
-            }
-        except aiodocker.exceptions.DockerError as e:
-            if is_container_not_found(e):
-                result[sid] = {"status": "gone"}
-            else:
-                result[sid] = {"status": "error"}
-
-    return {"sessions": result}
-
-
 # =============================================================================
 # WEBSOCKET AND HTTP PROXY FOR TTYD
 # =============================================================================
@@ -991,12 +1151,25 @@ async def websocket_proxy(websocket: WebSocket, session_id: str):
     """
     WebSocket proxy for ttyd terminal connections.
 
-    Proxies WebSocket traffic between browser and ttyd, enabling:
-    - Single port entry (8080) for all connections
-    - Connection monitoring and heartbeat
-    - Graceful reconnection handling
-    - Reference counting to prevent use-after-delete races
+    Includes authentication and ownership checks.
     """
+    # Auth check (HTTP middleware doesn't cover WebSocket connections)
+    if auth_manager:
+        token = websocket.cookies.get("vibe_session")
+        ws_username = auth_manager.validate_session(token) if token else None
+        if not ws_username:
+            await websocket.close(code=4001, reason="Unauthorized")
+            return
+    else:
+        ws_username = "__anonymous__"
+
+    # Ownership check
+    if owner_store:
+        session_owner = owner_store.get_owner(session_id)
+        if session_owner is None or session_owner != ws_username:
+            await websocket.close(code=4003, reason="Access denied")
+            return
+
     # Acquire session reference (prevents deletion while we're connected)
     try:
         session = await session_manager.acquire_session_ref(session_id)
@@ -1008,7 +1181,7 @@ async def websocket_proxy(websocket: WebSocket, session_id: str):
         port = session.port  # Safe - we hold reference
         # Accept with 'tty' subprotocol - required by ttyd
         await websocket.accept(subprotocol="tty")
-        logger.info(f"WebSocket proxy started for session {session_id} -> port {port}")
+        logger.info(f"WebSocket proxy started for session {session_id[:12]} -> port {port}")
 
         # Connect to ttyd's WebSocket
         ttyd_ws = None
@@ -1064,9 +1237,9 @@ async def websocket_proxy(websocket: WebSocket, session_id: str):
                 )
 
         except websockets.exceptions.ConnectionClosed as e:
-            logger.info(f"ttyd WebSocket closed for session {session_id}: {e}")
+            logger.info(f"ttyd WebSocket closed for session {session_id[:12]}: {e}")
         except Exception as e:
-            logger.error(f"WebSocket proxy error for session {session_id}: {e}")
+            logger.error(f"WebSocket proxy error for session {session_id[:12]}: {e}")
         finally:
             # Clean up WebSocket
             if websocket.client_state == WebSocketState.CONNECTED:
@@ -1074,7 +1247,7 @@ async def websocket_proxy(websocket: WebSocket, session_id: str):
                     await websocket.close()
                 except Exception:
                     pass
-            logger.info(f"WebSocket proxy ended for session {session_id}")
+            logger.info(f"WebSocket proxy ended for session {session_id[:12]}")
     finally:
         # Always release the session reference
         await session_manager.release_session_ref(session)
@@ -1126,7 +1299,7 @@ async def http_proxy(request: Request, session_id: str, path: str = ""):
         )
 
     except httpx.RequestError as e:
-        logger.error(f"HTTP proxy error for session {session_id}: {e}")
+        logger.error(f"HTTP proxy error for session {session_id[:12]}: {e}")
         raise HTTPException(status_code=502, detail="Failed to connect to terminal service")
 
 

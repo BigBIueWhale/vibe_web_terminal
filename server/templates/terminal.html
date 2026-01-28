@@ -40,6 +40,11 @@
             font-weight: bold;
             font-size: 1.1rem;
             color: #00d4ff;
+            text-decoration: none;
+        }
+
+        .logo:hover {
+            color: #33ddff;
         }
 
         .session-info {
@@ -479,7 +484,7 @@
             background: #2d2d2d;
             border: 1px solid #444;
             border-radius: 8px;
-            min-width: 260px;
+            min-width: 300px;
             z-index: 500;
             box-shadow: 0 8px 24px rgba(0,0,0,0.5);
             overflow: hidden;
@@ -510,7 +515,6 @@
             gap: 0.5rem;
             padding: 0.5rem 0.75rem;
             font-size: 0.85rem;
-            cursor: pointer;
             transition: background 0.1s;
             text-decoration: none;
             color: #e0e0e0;
@@ -546,6 +550,24 @@
             font-size: 0.75rem;
         }
 
+        .sd-delete {
+            background: transparent;
+            border: none;
+            color: #f87171;
+            cursor: pointer;
+            font-size: 0.75rem;
+            padding: 0.15rem 0.4rem;
+            border-radius: 3px;
+            opacity: 0.6;
+            transition: opacity 0.15s, background 0.15s;
+            flex-shrink: 0;
+        }
+
+        .sd-delete:hover {
+            opacity: 1;
+            background: rgba(248, 113, 113, 0.15);
+        }
+
         .btn-new-sm {
             background: linear-gradient(90deg, #7c3aed, #00d4ff);
             border: none;
@@ -554,6 +576,19 @@
             border-radius: 4px;
             cursor: pointer;
             font-size: 0.75rem;
+        }
+
+        .btn-new-sm:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .sd-limit {
+            font-size: 0.7rem;
+            color: #666;
+            padding: 0.3rem 0.75rem;
+            border-top: 1px solid #333;
+            text-align: center;
         }
     </style>
 </head>
@@ -565,22 +600,22 @@
                 <div class="sessions-dropdown" id="sessionsDropdown">
                     <div class="sessions-dropdown-header">
                         <span>Your Sessions</span>
-                        <button class="btn-new-sm" onclick="newSession()">+ New</button>
+                        <button class="btn-new-sm" id="newSessionBtn" onclick="newSession()">+ New</button>
                     </div>
                     <div class="sessions-dropdown-list" id="sessionsDropdownList">
                         <div class="sd-item" style="color:#888; cursor:default;">Loading...</div>
                     </div>
+                    <div class="sd-limit" id="sessionsLimit"></div>
                 </div>
             </div>
-            <span class="logo">Vibe Terminal</span>
+            <a href="/" class="logo">Vibe Terminal</a>
             <div class="session-info">
-                Session: <span class="session-id" onclick="copySessionId()" title="Click to copy full URL">{{ session_id }}</span>
+                Session: <span class="session-id" onclick="copySessionId()" title="Click to copy full URL">{{ session_id[:8] }}...</span>
             </div>
         </div>
         <div class="header-right">
             <button class="btn" onclick="showFiles()">Files</button>
             <button class="btn btn-upload" onclick="showUpload()">Upload</button>
-            <button class="btn" onclick="newSession()">New Session</button>
         </div>
     </div>
 
@@ -670,12 +705,11 @@
 
     <div class="toast" id="toast"></div>
 
-    <script src="/static/sessions.js"></script>
     <script>
         const sessionId = "{{ session_id }}";
-        SessionStore.save(sessionId);
         let uploadQueue = [];
         let uploadStats = { completed: 0, total: 0, bytes: 0, startTime: 0 };
+        let cachedMaxSessions = 3;
 
         function hideLoading() {
             document.getElementById('loadingOverlay').classList.add('hidden');
@@ -719,7 +753,6 @@
 
             try {
                 const response = await fetch(`/session/${sessionId}/browse?path=${encodeURIComponent(path)}`);
-                SessionStore.handleApiResponse(sessionId, response);
                 if (!response.ok) throw new Error('Failed to load');
                 const data = await response.json();
 
@@ -859,7 +892,6 @@
         }
 
         function handleFolderSelect(files) {
-            // Files from folder upload have webkitRelativePath
             const fileList = Array.from(files);
             uploadFilesWithProgress(fileList, '');
         }
@@ -880,13 +912,11 @@
             updateStats();
 
             for (const file of files) {
-                // Get relative path for folder uploads
                 const relativePath = file.webkitRelativePath || file.name;
                 const displayName = relativePath.length > 40
                     ? '...' + relativePath.slice(-37)
                     : relativePath;
 
-                // Create progress element
                 const progressId = 'progress-' + Math.random().toString(36).substr(2, 9);
                 progressContainer.insertAdjacentHTML('afterbegin', `
                     <div class="progress-item" id="${progressId}">
@@ -978,7 +1008,6 @@
                 const response = await fetch('/session/new', { method: 'POST' });
                 const data = await response.json();
                 if (response.ok) {
-                    SessionStore.save(data.session_id);
                     window.location.href = data.redirect;
                 } else {
                     showToast(data.detail || 'Failed to create session', true);
@@ -988,10 +1017,70 @@
             }
         }
 
+        async function deleteSessionFromDropdown(sid, btn, event) {
+            event.preventDefault();
+            event.stopPropagation();
+            btn.disabled = true;
+            btn.textContent = '...';
+            try {
+                await fetch(`/session/${sid}`, { method: 'DELETE' });
+                // If we deleted the current session, go home
+                if (sid === sessionId) {
+                    window.location.href = '/';
+                    return;
+                }
+                // Remove the item from dropdown
+                const item = btn.closest('.sd-item');
+                if (item) item.remove();
+                // Refresh the dropdown to update counts
+                await loadSessionsDropdown();
+            } catch (e) {
+                showToast('Failed to delete session', true);
+                btn.disabled = false;
+                btn.textContent = 'X';
+            }
+        }
+
         function sdStatusClass(status) {
             if (status === 'running') return 'running';
             if (status === 'exited' || status === 'dead' || status === 'gone') return 'stopped';
             return 'unknown';
+        }
+
+        async function loadSessionsDropdown() {
+            const list = document.getElementById('sessionsDropdownList');
+            const limitEl = document.getElementById('sessionsLimit');
+            const newBtn = document.getElementById('newSessionBtn');
+
+            try {
+                const response = await fetch('/my/sessions');
+                if (!response.ok) throw new Error('Failed');
+                const data = await response.json();
+                const sessions = data.sessions || [];
+                cachedMaxSessions = data.max_sessions || 3;
+
+                // Update limit display and new button state
+                limitEl.textContent = `${sessions.length} / ${cachedMaxSessions} sessions`;
+                newBtn.disabled = sessions.length >= cachedMaxSessions;
+
+                if (sessions.length === 0) {
+                    list.innerHTML = '<div class="sd-item" style="color:#888; cursor:default;">No sessions</div>';
+                    return;
+                }
+                list.innerHTML = sessions.map(s => {
+                    const isCurrent = s.id === sessionId;
+                    const dotClass = sdStatusClass(s.status);
+                    const statusText = s.status === 'running' ? 'Running' : (s.status || '?');
+                    return `<a class="sd-item${isCurrent ? ' current' : ''}" href="/terminal/${s.id}">
+                        <span class="sd-dot ${dotClass}"></span>
+                        <span class="sd-label">${s.label}</span>
+                        <span class="sd-status">${statusText}</span>
+                        <button class="sd-delete" onclick="deleteSessionFromDropdown('${s.id}', this, event)" title="Delete session">X</button>
+                    </a>`;
+                }).join('');
+            } catch (e) {
+                list.innerHTML = '<div class="sd-item" style="color:#f87171; cursor:default;">Failed to load</div>';
+            }
         }
 
         async function toggleSessionsDropdown() {
@@ -1003,22 +1092,7 @@
             dd.classList.add('open');
             const list = document.getElementById('sessionsDropdownList');
             list.innerHTML = '<div class="sd-item" style="color:#888; cursor:default;">Loading...</div>';
-
-            const sessions = await SessionStore.checkAll();
-            if (sessions.length === 0) {
-                list.innerHTML = '<div class="sd-item" style="color:#888; cursor:default;">No sessions</div>';
-                return;
-            }
-            list.innerHTML = sessions.map(s => {
-                const isCurrent = s.id === sessionId;
-                const dotClass = sdStatusClass(s.status);
-                const statusText = s.status === 'running' ? 'Running' : (s.status || '?');
-                return `<a class="sd-item${isCurrent ? ' current' : ''}" href="/terminal/${s.id}">
-                    <span class="sd-dot ${dotClass}"></span>
-                    <span class="sd-label">${s.label}</span>
-                    <span class="sd-status">${statusText}</span>
-                </a>`;
-            }).join('');
+            await loadSessionsDropdown();
         }
 
         // Close sessions dropdown when clicking outside
@@ -1046,7 +1120,6 @@
                 e.preventDefault();
                 zone.classList.remove('dragover');
 
-                // Handle both files and folders via DataTransferItemList
                 const items = e.dataTransfer.items;
                 if (items) {
                     const files = [];
@@ -1070,12 +1143,10 @@
             });
         });
 
-        // Recursively traverse folder structure
         function traverseFileTree(item, path, files) {
             return new Promise((resolve) => {
                 if (item.isFile) {
                     item.file((file) => {
-                        // Add relative path to file object
                         Object.defineProperty(file, 'webkitRelativePath', {
                             value: path + file.name
                         });

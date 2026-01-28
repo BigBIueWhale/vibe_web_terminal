@@ -105,44 +105,6 @@
             display: block;
         }
 
-        .existing-session {
-            margin-top: 1.5rem;
-            padding-top: 1.5rem;
-            border-top: 1px solid rgba(255, 255, 255, 0.1);
-            font-size: 0.9rem;
-        }
-
-        .existing-session input {
-            background: rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            padding: 0.5rem 0.75rem;
-            border-radius: 8px;
-            color: white;
-            font-size: 0.85rem;
-            width: 250px;
-            margin-right: 0.5rem;
-        }
-
-        .existing-session input::placeholder {
-            color: #666;
-        }
-
-        .btn-resume {
-            background: transparent;
-            border: 1px solid #7c3aed;
-            color: #7c3aed;
-            padding: 0.5rem 1rem;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.2s;
-            font-size: 0.85rem;
-        }
-
-        .btn-resume:hover {
-            background: #7c3aed;
-            color: white;
-        }
-
         .error {
             color: #f87171;
             margin-top: 1rem;
@@ -162,10 +124,21 @@
             margin-bottom: 2rem;
         }
 
-        .sessions-panel h3 {
-            color: #00d4ff;
+        .sessions-panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             margin-bottom: 0.75rem;
+        }
+
+        .sessions-panel-header h3 {
+            color: #00d4ff;
             font-size: 1rem;
+        }
+
+        .sessions-limit {
+            color: #666;
+            font-size: 0.8rem;
         }
 
         .session-card {
@@ -251,6 +224,12 @@
             background: rgba(248, 113, 113, 0.2);
             border-color: #f87171;
         }
+
+        .sessions-loading {
+            color: #888;
+            font-size: 0.85rem;
+            padding: 0.5rem 0;
+        }
     </style>
 </head>
 <body>
@@ -259,8 +238,13 @@
         <p class="subtitle">Full Linux terminal with Mistral Vibe CLI in your browser</p>
 
         <div class="sessions-panel" id="sessionsPanel" style="display: none;">
-            <h3>Your Sessions</h3>
-            <div id="sessionsList"></div>
+            <div class="sessions-panel-header">
+                <h3>Your Sessions</h3>
+                <span class="sessions-limit" id="sessionsLimitText"></span>
+            </div>
+            <div id="sessionsList">
+                <p class="sessions-loading">Loading sessions...</p>
+            </div>
         </div>
 
         <div class="features">
@@ -280,16 +264,11 @@
 
         <p class="loading" id="loading">Creating your terminal environment...</p>
         <p class="error" id="error"></p>
-
-        <div class="existing-session">
-            <p style="margin-bottom: 0.75rem; color: #666; font-size: 0.85rem;">Or paste a session ID:</p>
-            <input type="text" id="sessionId" placeholder="Paste your session ID">
-            <button class="btn-resume" onclick="resumeSession()">Resume</button>
-        </div>
     </div>
 
-    <script src="/static/sessions.js"></script>
     <script>
+        let maxSessions = 3;
+
         function timeAgo(dateStr) {
             const now = new Date();
             const then = new Date(dateStr);
@@ -312,17 +291,31 @@
         function renderSessions(sessions) {
             const panel = document.getElementById('sessionsPanel');
             const list = document.getElementById('sessionsList');
+            const limitText = document.getElementById('sessionsLimitText');
+            const startBtn = document.getElementById('startBtn');
+
+            limitText.textContent = `${sessions.length} / ${maxSessions}`;
 
             if (!sessions || sessions.length === 0) {
                 panel.style.display = 'none';
+                startBtn.disabled = false;
                 return;
+            }
+
+            // Disable launch button if at max
+            if (sessions.length >= maxSessions) {
+                startBtn.disabled = true;
+                startBtn.textContent = `Limit reached (${maxSessions})`;
+            } else {
+                startBtn.disabled = false;
+                startBtn.textContent = 'Launch Terminal';
             }
 
             panel.style.display = 'block';
             list.innerHTML = sessions.map(s => {
                 const dotClass = statusClass(s.status);
                 const statusText = s.status === 'running' ? 'Running' : (s.status || 'Unknown');
-                const time = s.created_at ? timeAgo(s.created_at) : timeAgo(s.addedAt);
+                const time = s.created_at ? timeAgo(s.created_at) : '';
                 return `
                     <div class="session-card" data-id="${s.id}">
                         <div class="session-card-left" onclick="window.location.href='/terminal/${s.id}'">
@@ -340,13 +333,16 @@
         async function deleteSessionCard(id, btn) {
             btn.disabled = true;
             btn.textContent = '...';
-            await SessionStore.deleteSession(id);
+            try {
+                await fetch(`/session/${id}`, { method: 'DELETE' });
+            } catch (e) {
+                // Ignore network errors
+            }
             const card = btn.closest('.session-card');
             if (card) card.remove();
-            // Hide panel if empty
-            if (document.getElementById('sessionsList').children.length === 0) {
-                document.getElementById('sessionsPanel').style.display = 'none';
-            }
+
+            // Re-fetch to update counts and button state
+            await loadSessions();
         }
 
         async function createSession() {
@@ -363,7 +359,6 @@
                 const data = await response.json();
 
                 if (response.ok) {
-                    SessionStore.save(data.session_id);
                     window.location.href = data.redirect;
                 } else {
                     throw new Error(data.detail || 'Failed to create session');
@@ -376,23 +371,20 @@
             }
         }
 
-        function resumeSession() {
-            const sessionId = document.getElementById('sessionId').value.trim();
-            if (sessionId) {
-                window.location.href = `/terminal/${sessionId}`;
+        async function loadSessions() {
+            try {
+                const response = await fetch('/my/sessions');
+                if (!response.ok) return;
+                const data = await response.json();
+                maxSessions = data.max_sessions || 3;
+                renderSessions(data.sessions || []);
+            } catch (e) {
+                // Silently fail — sessions panel stays hidden
             }
         }
 
-        // Allow Enter key to resume session
-        document.getElementById('sessionId').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') resumeSession();
-        });
-
         // Load sessions on page load
-        (async () => {
-            const sessions = await SessionStore.checkAll();
-            renderSessions(sessions);
-        })();
+        loadSessions();
     </script>
 </body>
 </html>

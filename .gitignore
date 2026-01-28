@@ -30,3 +30,6 @@ auth.yaml
 # SSL certificates and ACME challenge files
 certs/
 acme-webroot/
+
+# Session data (workspaces, ownership mapping)
+data/
