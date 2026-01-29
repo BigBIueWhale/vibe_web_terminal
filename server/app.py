@@ -61,6 +61,8 @@ OWNER_STORE_PATH = DATA_DIR / "session_owners.json"
 # Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # Docker client (initialized in lifespan)
 docker_client: aiodocker.Docker | None = None
@@ -1355,4 +1357,4 @@ if __name__ == "__main__":
             print("=" * 70)
             sys.exit(1)
 
-    uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT)
+    uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT, access_log=False)

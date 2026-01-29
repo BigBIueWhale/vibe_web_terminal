@@ -58,6 +58,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("reverse-proxy")
+logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
 
 # ============================================================================
