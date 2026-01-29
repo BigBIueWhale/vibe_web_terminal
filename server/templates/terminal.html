@@ -608,7 +608,7 @@
                     <div class="sd-limit" id="sessionsLimit"></div>
                 </div>
             </div>
-            <a href="/" class="logo">Vibe Terminal</a>
+            <a href="javascript:void(0)" onclick="navigateAway('/')" class="logo">Vibe Terminal</a>
             <div class="session-info">
                 Session: <span class="session-id" onclick="copySessionId()" title="Click to copy full URL">{{ session_id[:8] }}...</span>
             </div>
@@ -1008,7 +1008,7 @@
                 const response = await fetch('/session/new', { method: 'POST' });
                 const data = await response.json();
                 if (response.ok) {
-                    window.location.href = data.redirect;
+                    navigateAway(data.redirect);
                 } else {
                     showToast(data.detail || 'Failed to create session', true);
                 }
@@ -1026,7 +1026,7 @@
                 await fetch(`/session/${sid}`, { method: 'DELETE' });
                 // If we deleted the current session, go home
                 if (sid === sessionId) {
-                    window.location.href = '/';
+                    navigateAway('/');
                     return;
                 }
                 // Remove the item from dropdown
@@ -1071,7 +1071,7 @@
                     const isCurrent = s.id === sessionId;
                     const dotClass = sdStatusClass(s.status);
                     const statusText = s.status === 'running' ? 'Running' : (s.status || '?');
-                    return `<a class="sd-item${isCurrent ? ' current' : ''}" href="/terminal/${s.id}">
+                    return `<a class="sd-item${isCurrent ? ' current' : ''}" href="javascript:void(0)" onclick="navigateAway('/terminal/${s.id}')">
                         <span class="sd-dot ${dotClass}"></span>
                         <span class="sd-label">${s.label}</span>
                         <span class="sd-status">${statusText}</span>
@@ -1165,6 +1165,16 @@
                     resolve();
                 }
             });
+        }
+
+        // Remove iframe before navigating to prevent ttyd's beforeunload popup
+        function navigateAway(url) {
+            const frame = document.getElementById('terminalFrame');
+            if (frame) {
+                frame.src = 'about:blank';
+                frame.remove();
+            }
+            window.location.href = url;
         }
 
         // Close modals on escape

@@ -12,7 +12,7 @@ A web-based terminal service that provides full Linux terminals with Mistral Vib
 - **Session Management** - Track, switch, and delete sessions from the browser
 - **Session Persistence** - Containers persist until PC restart (workspaces in /tmp)
 - **Authentication** - Optional username/password and LDAP login for internet-facing deployments
-- **SSL Reverse Proxy** - Built-in Python reverse proxy with automatic Let's Encrypt certificates
+- **SSL Reverse Proxy** - Built-in Python reverse proxy with self-signed certificates
 
 ## Architecture
 
@@ -205,22 +205,15 @@ The reverse proxy (`reverse_proxy.py`) is a standalone Python application using 
 - **HTTPS** on port 8443 — reverse-proxies all traffic to `localhost:8081`
 - **WebSocket** proxying — required for the terminal connections
 - **Security headers** — HSTS, X-Content-Type-Options, X-Frame-Options, etc.
-- **Auto-renewal** — checks certificate expiry every 12 hours (when using `--auto-ssl`)
 
 #### Prerequisites
 
 ```bash
 # Install proxy dependencies
 pip install -r proxy_requirements.txt
-
-# Install certbot (for auto-SSL)
-sudo apt install certbot
-# or: pip install certbot
 ```
 
-#### Option A: Manual / self-signed certificates (recommended for quick setup)
-
-Generate a self-signed certificate and start immediately (no root required):
+#### Generate a self-signed certificate and start
 
 ```bash
 # Generate a self-signed certificate (valid 1 year)
@@ -230,9 +223,6 @@ openssl req -x509 -newkey rsa:4096 \
     -out certs/self-signed/fullchain.pem \
     -days 365 -nodes -subj "/CN=$(curl -4 -s ifconfig.me)"
 
-# Start the Vibe server (in background or separate terminal)
-./run.sh &
-
 # Start the reverse proxy on port 8443
 python3 reverse_proxy.py \
     --cert certs/self-signed/fullchain.pem \
@@ -241,65 +231,6 @@ python3 reverse_proxy.py \
 
 Your site is live at `https://<your-public-ip>:8443`. Browsers will show a
 certificate warning (self-signed) — click "Advanced" > "Proceed" to continue.
-
-#### Option B: Let's Encrypt (requires a domain name + root)
-
-If you have a domain name pointing to this server:
-
-```bash
-# Requires root for ACME challenge on port 80
-sudo python3 reverse_proxy.py \
-    --domain vibe.example.com \
-    --email admin@example.com \
-    --auto-ssl
-```
-
-What happens:
-1. HTTP server starts on port 80 (for ACME challenges only)
-2. Certbot obtains a trusted certificate from Let's Encrypt
-3. HTTPS reverse proxy starts on port 8443
-4. Background task checks for renewal every 12 hours
-5. Your site is live at `https://vibe.example.com:8443`
-
-Certificates are stored in `certs/<domain>/`.
-
-#### Option C: Your own CA-issued certificates
-
-If you have certificates from your CA:
-
-```bash
-python3 reverse_proxy.py \
-    --cert /path/to/fullchain.pem \
-    --key /path/to/privkey.pem
-```
-
-HTTPS reverse proxy starts on port 8443 (override with `--port`).
-
-#### Option C: Development (no SSL)
-
-For testing the proxy locally without SSL:
-
-```bash
-python3 reverse_proxy.py --no-ssl --port 8080
-```
-
-#### Reverse proxy CLI reference
-
-```
-usage: reverse_proxy.py [-h] [--auto-ssl] [--cert CERT] [--key KEY]
-                         [--no-ssl] [--domain DOMAIN] [--email EMAIL]
-                         [--port PORT] [--upstream-port UPSTREAM_PORT]
-
-Options:
-  --auto-ssl          Auto-obtain Let's Encrypt certificate (needs root)
-  --cert FILE         Path to SSL certificate (fullchain.pem)
-  --key FILE          Path to SSL private key (privkey.pem)
-  --no-ssl            No SSL (development only)
-  --domain DOMAIN     Domain for Let's Encrypt
-  --email EMAIL       Email for Let's Encrypt
-  --port PORT         HTTPS port (default: 8443)
-  --upstream-port N   Backend port (default: 8081)
-```
 
 ### Step 3: Start Everything
 
@@ -571,20 +502,6 @@ Change the port in `server/app.py` or stop the existing service.
 Check Docker logs:
 ```bash
 docker logs vibe-session-XXXXX
-```
-
-### Let's Encrypt certificate fails (--auto-ssl)
-
-Ensure:
-1. DNS for your domain points to this server's public IP
-2. Port 80 is accessible from the internet (required for ACME HTTP-01 challenge)
-3. `certbot` is installed: `sudo apt install certbot`
-4. You're running with `sudo` (port 80 requires root)
-
-Check manually:
-```bash
-# View certbot logs
-sudo cat /var/log/letsencrypt/letsencrypt.log
 ```
 
 ### Login not working

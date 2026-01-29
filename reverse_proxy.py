@@ -7,8 +7,7 @@ Vibe Web Terminal server (localhost:8081). It handles:
 
   - TLS/SSL termination (HTTPS on port 8443 by default)
   - WebSocket proxying (required for terminal connections)
-  - Automatic Let's Encrypt certificates via certbot (optional)
-  - Certificate auto-renewal (checked every 12 hours)
+  - Security headers (HSTS, X-Frame-Options, etc.)
 
 Only this proxy is exposed to the public internet. The backend server
 remains bound to localhost.
@@ -17,29 +16,12 @@ Architecture:
     Internet --> reverse_proxy.py :8443 (SSL) --> localhost:8081 (vibe server)
 
 Usage:
-    # Manual / self-signed certificates:
     python3 reverse_proxy.py \\
-        --cert /path/to/fullchain.pem \\
-        --key /path/to/privkey.pem
-
-    # Auto-SSL with Let's Encrypt (requires root for ACME on port 80):
-    sudo python3 reverse_proxy.py \\
-        --domain vibe.example.com \\
-        --email admin@example.com \\
-        --auto-ssl
-
-    # Development (no SSL, plain HTTP on port 8080):
-    python3 reverse_proxy.py --no-ssl --port 8080
+        --cert certs/self-signed/fullchain.pem \\
+        --key certs/self-signed/privkey.pem
 
 Prerequisites:
     pip install aiohttp
-    # For --auto-ssl only:
-    apt install certbot   # or: pip install certbot
-
-Security:
-    - Runs on port 8443 by default (no root required)
-    - The proxy adds security headers (HSTS, X-Frame-Options, etc.)
-    - Only proxies to 127.0.0.1 — never to external hosts
 """
 
 import argparse
