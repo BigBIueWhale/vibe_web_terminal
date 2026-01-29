@@ -237,6 +237,8 @@ class SessionManager:
                 raise
 
         # Create container on default bridge (iptables handles isolation)
+        # No CPU limits: Mistral Vibe CLI is highly inefficient piece of software
+        # that takes a lot of CPU power. Let containers burst to full CPU when available.
         config = {
             "Image": DOCKER_IMAGE,
             "Env": ["TERM=xterm-256color"],
@@ -247,8 +249,6 @@ class SessionManager:
                 "Binds": [f"{workspace_dir}:/home/vibe/workspace:rw"],
                 "ExtraHosts": ["host.docker.internal:host-gateway"],
                 "Memory": 2147483648,  # 2GB
-                "CpuPeriod": 100000,
-                "CpuQuota": 100000,  # 1 CPU
                 "RestartPolicy": {"Name": "unless-stopped"},
             },
         }
