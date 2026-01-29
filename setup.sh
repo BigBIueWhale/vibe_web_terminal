@@ -4,6 +4,13 @@
 
 set -e
 
+FORCE_BUILD=false
+for arg in "$@"; do
+    case "$arg" in
+        --force-build) FORCE_BUILD=true ;;
+    esac
+done
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
@@ -102,11 +109,17 @@ pip install --quiet -r proxy_requirements.txt
 log_info "Dependencies installed."
 
 # Step 4: Build Docker image (or skip if already exists)
-if docker image inspect vibe-terminal:latest &> /dev/null; then
+if [ "$FORCE_BUILD" = true ]; then
+    log_info "Force building Docker image..."
+    cd docker
+    docker build -t vibe-terminal:latest .
+    cd ..
+    log_info "Docker image built successfully."
+elif docker image inspect vibe-terminal:latest &> /dev/null; then
     log_info "Docker image vibe-terminal:latest already exists, skipping build."
-    log_info "(Delete it with 'docker rmi vibe-terminal:latest' to force rebuild)"
+    log_info "(Run with --force-build to rebuild)"
 else
-    log_info "Building Docker image (this may take a few minutes)..."
+    log_info "Building Docker image..."
     cd docker
     docker build -t vibe-terminal:latest .
     cd ..
