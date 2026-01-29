@@ -1004,6 +1004,8 @@
         }
 
         async function newSession() {
+            const btn = document.getElementById('newSessionBtn');
+            btn.disabled = true;
             try {
                 const response = await fetch('/session/new', { method: 'POST' });
                 const data = await response.json();
@@ -1011,9 +1013,11 @@
                     navigateAway(data.redirect);
                 } else {
                     showToast(data.detail || 'Failed to create session', true);
+                    btn.disabled = false;
                 }
             } catch (e) {
                 showToast('Failed to create session', true);
+                btn.disabled = false;
             }
         }
 

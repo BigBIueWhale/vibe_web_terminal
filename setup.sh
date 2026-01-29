@@ -98,6 +98,7 @@ source venv/bin/activate
 log_info "Installing Python dependencies..."
 pip install --quiet --upgrade pip
 pip install --quiet -r server/requirements.txt
+pip install --quiet -r proxy_requirements.txt
 log_info "Dependencies installed."
 
 # Step 4: Build Docker image (or skip if already exists)
@@ -128,20 +129,8 @@ else
     log_warn "Vibe CLI inside containers may not work without it."
 fi
 
-# Step 7: Create run script if not exists
-if [ ! -f "run.sh" ]; then
-    log_info "Creating run script..."
-    cat > run.sh << 'RUNEOF'
-#!/bin/bash
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
-source venv/bin/activate
-echo "Starting Vibe Web Terminal on http://127.0.0.1:8081"
-echo "Press Ctrl+C to stop"
-python server/app.py
-RUNEOF
-    chmod +x run.sh
-fi
+# Step 7: Ensure scripts are executable
+chmod +x "$SCRIPT_DIR/run.sh" "$SCRIPT_DIR/stop.sh" 2>/dev/null
 
 echo ""
 echo "============================================"

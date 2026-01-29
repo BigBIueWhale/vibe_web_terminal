@@ -487,6 +487,7 @@ class SessionOwnerStore:
 # Global instances
 session_manager = SessionManager()
 owner_store: SessionOwnerStore | None = None  # Initialized in lifespan
+_user_create_locks: dict[str, asyncio.Lock] = {}  # Per-user locks for session creation
 
 
 def generate_session_id() -> str:
@@ -730,24 +731,41 @@ async def create_new_session(request: Request):
     """Create a new terminal session for the current user."""
     username = get_current_user(request)
 
-    # Enforce max sessions per user
-    count = owner_store.count_user_sessions(username)
-    if count >= MAX_SESSIONS_PER_USER:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Maximum {MAX_SESSIONS_PER_USER} sessions reached. Delete a session first."
-        )
+    if username not in _user_create_locks:
+        _user_create_locks[username] = asyncio.Lock()
+    async with _user_create_locks[username]:
+        # Prune gone sessions before counting (owner_store may have stale entries)
+        for sid in owner_store.get_user_sessions(username):
+            session = session_manager.get_session(sid)
+            if not session:
+                owner_store.remove(sid)
+                continue
+            try:
+                container = await docker_client.containers.get(session.container_name)
+                info = await container.show()
+                if info["State"]["Status"] in ("exited", "dead"):
+                    owner_store.remove(sid)
+            except aiodocker.exceptions.DockerError:
+                owner_store.remove(sid)
 
-    session_id = generate_session_id()
-    try:
-        await session_manager.get_or_create_session(session_id)
-        owner_store.assign(session_id, username)
-        return JSONResponse({
-            "session_id": session_id,
-            "redirect": f"/terminal/{session_id}"
-        })
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Enforce max sessions per user
+        count = owner_store.count_user_sessions(username)
+        if count >= MAX_SESSIONS_PER_USER:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Maximum {MAX_SESSIONS_PER_USER} sessions reached. Delete a session first."
+            )
+
+        session_id = generate_session_id()
+        try:
+            await session_manager.get_or_create_session(session_id)
+            owner_store.assign(session_id, username)
+            return JSONResponse({
+                "session_id": session_id,
+                "redirect": f"/terminal/{session_id}"
+            })
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/terminal/{session_id}", response_class=HTMLResponse)

@@ -60,29 +60,29 @@ newgrp docker
 docker run hello-world
 ```
 
-## Quick Start (Local)
+## Quick Start
 
 ```bash
-# Clone/copy to your server
 cd /path/to/vibe-web-terminal
 
-# Run setup (builds Docker image, installs dependencies)
+# One-time setup (builds Docker image, installs all dependencies)
 ./setup.sh
 
-# Start the server
+# Start everything (server + SSL reverse proxy)
 ./run.sh
+
+# Stop everything
+./stop.sh
 ```
 
-Then open http://127.0.0.1:8081 (only accessible from this machine).
+`run.sh` automatically generates self-signed SSL certificates if missing or expired, starts the backend server on `http://127.0.0.1:8081`, and the SSL reverse proxy on `https://0.0.0.0:8443`. Press Ctrl+C to stop both.
 
 ---
 
 ## Production Deployment (Internet-Facing)
 
-To expose Vibe Web Terminal to the internet, you need two things:
-
-1. **Authentication** — so only authorized users can access the terminal
-2. **SSL reverse proxy** — so traffic is encrypted
+To expose Vibe Web Terminal to the internet you need authentication.
+SSL is handled automatically by `run.sh` (self-signed certificates).
 
 ### Step 1: Enable Authentication
 
@@ -198,68 +198,29 @@ Install the LDAP library:
 pip install ldap3
 ```
 
-### Step 2: Set Up the SSL Reverse Proxy
-
-The reverse proxy (`reverse_proxy.py`) is a standalone Python application using `aiohttp`. It handles:
-
-- **HTTPS** on port 8443 — reverse-proxies all traffic to `localhost:8081`
-- **WebSocket** proxying — required for the terminal connections
-- **Security headers** — HSTS, X-Content-Type-Options, X-Frame-Options, etc.
-
-#### Prerequisites
+### Step 2: Start Everything
 
 ```bash
-# Install proxy dependencies
-pip install -r proxy_requirements.txt
+./run.sh
 ```
 
-#### Generate a self-signed certificate and start
-
-```bash
-# Generate a self-signed certificate (valid 1 year)
-mkdir -p certs/self-signed
-openssl req -x509 -newkey rsa:4096 \
-    -keyout certs/self-signed/privkey.pem \
-    -out certs/self-signed/fullchain.pem \
-    -days 365 -nodes -subj "/CN=$(curl -4 -s ifconfig.me)"
-
-# Start the reverse proxy on port 8443
-python3 reverse_proxy.py \
-    --cert certs/self-signed/fullchain.pem \
-    --key certs/self-signed/privkey.pem
-```
+This single command:
+1. Auto-generates self-signed SSL certificates if missing or expired (10-year validity)
+2. Starts the backend server on `http://127.0.0.1:8081`
+3. Starts the SSL reverse proxy on `https://0.0.0.0:8443`
 
 Your site is live at `https://<your-public-ip>:8443`. Browsers will show a
 certificate warning (self-signed) — click "Advanced" > "Proceed" to continue.
 
-### Step 3: Start Everything
+To stop: press Ctrl+C, or from another terminal run `./stop.sh`.
 
-Full production startup sequence:
-
-```bash
-# Terminal 1: Start the Vibe server
-cd /path/to/vibe-web-terminal
-source venv/bin/activate
-./run.sh
-
-# Terminal 2: Start the reverse proxy (port 8443)
-cd /path/to/vibe-web-terminal
-python3 reverse_proxy.py \
-    --cert certs/self-signed/fullchain.pem \
-    --key certs/self-signed/privkey.pem
-```
-
-Your site is available at `https://<your-ip>:8443`.
-
-Or use systemd services for automatic startup (see below).
-
-### Step 4 (optional): systemd Services
+### Step 3 (optional): systemd Service
 
 Create `/etc/systemd/system/vibe-terminal.service`:
 
 ```ini
 [Unit]
-Description=Vibe Web Terminal Server
+Description=Vibe Web Terminal
 After=docker.service
 Requires=docker.service
 
@@ -267,26 +228,8 @@ Requires=docker.service
 Type=simple
 User=YOUR_USER
 WorkingDirectory=/path/to/vibe-web-terminal
-ExecStart=/path/to/vibe-web-terminal/venv/bin/python -m server.app
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Create `/etc/systemd/system/vibe-proxy.service`:
-
-```ini
-[Unit]
-Description=Vibe Web Terminal SSL Reverse Proxy
-After=vibe-terminal.service
-Wants=vibe-terminal.service
-
-[Service]
-Type=simple
-WorkingDirectory=/path/to/vibe-web-terminal
-ExecStart=/usr/bin/python3 /path/to/vibe-web-terminal/reverse_proxy.py --cert certs/self-signed/fullchain.pem --key certs/self-signed/privkey.pem
+ExecStart=/path/to/vibe-web-terminal/run.sh
+ExecStop=/path/to/vibe-web-terminal/stop.sh
 Restart=always
 RestartSec=5
 
@@ -296,8 +239,8 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable vibe-terminal vibe-proxy
-sudo systemctl start vibe-terminal vibe-proxy
+sudo systemctl enable vibe-terminal
+sudo systemctl start vibe-terminal
 ```
 
 ---
@@ -330,13 +273,9 @@ gunzip -c vibe-terminal-image.tar.gz | docker load
 # Extract project files
 tar -xzf vibe-web-terminal-bundle.tar.gz
 
-# Setup (skips Docker build since image already loaded)
+# Setup (skips Docker build since image already loaded) and run
 cd vibe-web-terminal
-python3 -m venv venv
-source venv/bin/activate
-pip install -r server/requirements.txt
-
-# Run
+./setup.sh
 ./run.sh
 ```
 
@@ -344,9 +283,9 @@ pip install -r server/requirements.txt
 
 ```
 vibe-web-terminal/
-├── setup.sh                # One-time setup script
-├── run.sh                  # Start the server
-├── stop.sh                 # Stop all containers and clean up
+├── setup.sh                # One-time setup (Docker image, all dependencies)
+├── run.sh                  # Start server + proxy (auto-generates SSL certs)
+├── stop.sh                 # Stop server + proxy
 ├── edit_user.py            # CLI tool to manage local users
 ├── auth.yaml.example       # Example auth configuration (committed)
 ├── auth.yaml               # Actual auth config (gitignored)
@@ -384,7 +323,8 @@ SERVER_PORT = 8081
 Sessions persist until PC restart:
 - Containers stay running until manually stopped or PC reboots
 - Workspaces are in `/tmp/vibe-workspaces/` (cleared on reboot)
-- Use `./stop.sh` to manually clean up all containers
+- Use `./stop.sh` to stop the server and proxy (containers keep running)
+- Use `./cleanup-sessions.sh` to remove all containers and data
 
 ### Ollama Server
 
@@ -495,7 +435,7 @@ sudo usermod -aG docker $USER
 
 ### Port already in use
 
-Change the port in `server/app.py` or stop the existing service.
+Run `./stop.sh` to stop existing instances, or change the port in `server/app.py`.
 
 ### Container fails to start
 
