@@ -482,7 +482,8 @@ async def on_shutdown(app: web.Application):
 
 def create_https_app() -> web.Application:
     """Create the HTTPS reverse proxy application."""
-    app = web.Application()
+    # Allow up to 500MB uploads (matches UI help text)
+    app = web.Application(client_max_size=500 * 1024 * 1024)
     app.on_shutdown.append(on_shutdown)
     # Catch-all route — proxy everything to upstream
     app.router.add_route("*", "/{path_info:.*}", proxy_handler)

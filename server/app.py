@@ -23,7 +23,7 @@ import aiofiles
 import aiodocker
 import aiodocker.exceptions
 import httpx
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -819,7 +819,7 @@ async def upload_file(
     request: Request,
     session_id: str,
     file: UploadFile = File(...),
-    path: Optional[str] = None
+    path: Optional[str] = Form(None)
 ):
     """Upload a file to the session workspace.
 
@@ -876,6 +876,7 @@ async def upload_file(
             "full_path": f"/home/vibe/workspace/{relative_path}"
         }
     except Exception as e:
+        logger.error(f"Upload failed for {file.filename}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
