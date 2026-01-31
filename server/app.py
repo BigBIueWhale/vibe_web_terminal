@@ -783,8 +783,16 @@ async def terminal_page(request: Request, session_id: str):
             "session_id": session_id,
             "ttyd_port": session.port,
         })
+    except aiodocker.exceptions.DockerError as e:
+        # Handle Docker-specific errors with clear messages
+        error_msg = str(e) if len(str(e)) < 200 else "Docker error occurred"
+        logger.error(f"Docker error for session {session_id[:12]}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start container: {error_msg}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Limit error message length to prevent serialization issues
+        error_msg = str(e)[:200] if str(e) else "Unknown error"
+        logger.error(f"Error loading terminal for session {session_id[:12]}: {e}")
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 @app.get("/session/{session_id}/status")
@@ -1057,14 +1065,29 @@ async def download_archive(request: Request, session_id: str, path: str = ""):
 
 @app.delete("/session/{session_id}")
 async def delete_session(request: Request, session_id: str):
-    """Delete a session and its container. Only the owner can delete."""
-    verify_session_ownership(request, session_id)
+    """Delete a session and its container. Only the owner can delete.
 
-    # Force-delete regardless of active connections
+    This endpoint is idempotent - it succeeds even if the session or container
+    is already gone (e.g., deleted externally by cleanup-sessions.sh).
+    """
+    # Check ownership, but allow deletion of orphaned sessions
+    username = get_current_user(request)
+    session_owner = owner_store.get_owner(session_id)
+
+    # Allow deletion if: user owns it, OR it's orphaned (not in owner_store but user is trying to clean up)
+    if session_owner is not None and session_owner != username:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Force-delete from session_manager regardless of active connections
     session = session_manager.get_session(session_id)
     if session:
-        await session_manager.delete_session(session_id, force=True)
+        try:
+            await session_manager.delete_session(session_id, force=True)
+        except Exception as e:
+            # Log but don't fail - the goal is to clean up
+            logger.warning(f"Error during session cleanup for {session_id[:12]}: {e}")
 
+    # Always remove from owner_store
     owner_store.remove(session_id)
     return {"status": "deleted"}
 
@@ -1102,9 +1125,15 @@ async def my_sessions(request: Request):
 
         result.append(info)
 
-    # Auto-prune gone sessions from owner store
+    # Auto-prune gone sessions from both owner store and session manager
     for sid in prune_ids:
         owner_store.remove(sid)
+        # Also clean up session_manager to prevent stale in-memory state
+        if session_manager.get_session(sid):
+            try:
+                await session_manager.delete_session(sid, force=True)
+            except Exception:
+                pass  # Best effort cleanup
 
     # Sort: running first, then by created_at descending
     result.sort(key=lambda s: (
@@ -1259,8 +1288,12 @@ async def websocket_proxy(websocket: WebSocket, session_id: str):
 
         except websockets.exceptions.ConnectionClosed as e:
             logger.info(f"ttyd WebSocket closed for session {session_id[:12]}: {e}")
+        except (OSError, ConnectionRefusedError) as e:
+            # ttyd is not running - container likely stopped
+            logger.warning(f"Cannot connect to ttyd for session {session_id[:12]}: {e}")
         except Exception as e:
-            logger.error(f"WebSocket proxy error for session {session_id[:12]}: {e}")
+            # Log the full exception type for debugging "max depth exceeded" and similar errors
+            logger.error(f"WebSocket proxy error for session {session_id[:12]}: {type(e).__name__}: {e}")
         finally:
             # Clean up WebSocket
             if websocket.client_state == WebSocketState.CONNECTED:
@@ -1282,9 +1315,11 @@ async def http_proxy(request: Request, session_id: str, path: str = ""):
 
     Proxies HTTP requests to ttyd, enabling all traffic through port 8080.
     """
-    port = get_session_port(session_id)
-    if port is None:
+    session = session_manager.get_session(session_id)
+    if not session or session.port is None:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    port = session.port
 
     # Build the target URL
     target_url = f"http://127.0.0.1:{port}/{path}"
@@ -1319,6 +1354,10 @@ async def http_proxy(request: Request, session_id: str, path: str = ""):
             media_type=response.headers.get('content-type')
         )
 
+    except httpx.ConnectError:
+        # Container's ttyd is not responding - likely container is gone
+        logger.warning(f"Cannot connect to ttyd for session {session_id[:12]} on port {port}")
+        raise HTTPException(status_code=503, detail="Terminal service unavailable - container may have stopped")
     except httpx.RequestError as e:
         logger.error(f"HTTP proxy error for session {session_id[:12]}: {e}")
         raise HTTPException(status_code=502, detail="Failed to connect to terminal service")
