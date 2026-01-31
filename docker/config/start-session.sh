@@ -12,6 +12,6 @@ else
     # Create detached, pre-type command, then attach
     tmux new-session -d -s "$SESSION_NAME"
     sleep 0.5
-    tmux send-keys -t "$SESSION_NAME" "vibe --auto-approve"
+    tmux send-keys -t "$SESSION_NAME" "vibe --agent auto-approve"
     exec tmux attach-session -t "$SESSION_NAME"
 fi

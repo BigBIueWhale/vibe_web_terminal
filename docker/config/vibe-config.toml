@@ -36,8 +36,7 @@ api_timeout = 900.0
 # - auto-approve: Auto-approves all tool executions (YOLO mode)
 # - explore: Read-only subagent for codebase exploration (used by task tool)
 
-# Disable auto-approve agent to prevent accidental YOLO mode in container
-disabled_agents = ["auto-approve"]
+# All agents enabled - users can cycle with Shift+Tab
 
 # =============================================================================
 # Tool Configuration
@@ -60,6 +59,17 @@ disabled_tools = ["task"]
 default_timeout = 300
 # Capture more output for debugging
 max_output_bytes = 32000
+
+# --- Auto-approve safe read-only tools ---
+# These tools cannot modify anything, so they're safe to auto-approve
+[tools.read_file]
+permission = "always"
+
+[tools.grep]
+permission = "always"
+
+[tools.todo]
+permission = "always"
 
 # =============================================================================
 # Provider Configuration

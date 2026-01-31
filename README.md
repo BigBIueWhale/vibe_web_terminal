@@ -66,7 +66,11 @@ docker run hello-world
 cd /path/to/vibe-web-terminal
 
 # One-time setup (builds Docker image, installs all dependencies)
+# NOTE: Building the Docker image requires internet access
 ./setup.sh
+
+# After changing docker/config files, rebuild the image:
+./setup.sh --force-build
 
 # Start everything (server + SSL reverse proxy)
 ./run.sh
@@ -246,7 +250,12 @@ sudo systemctl start vibe-terminal
 
 ## Offline / Internal Network Deployment
 
-The setup is fully offline-friendly. No CDNs or external resources are used at runtime.
+The setup is fully offline-friendly once the Docker image is built. No CDNs or external resources are used at runtime.
+
+**Online vs Offline:**
+- **Building the Docker image** (`./setup.sh --force-build`) requires internet access to download base images and packages
+- **Running the service** (`./run.sh`) works fully offline once the image is built
+- For air-gapped networks, build the image on an internet-connected machine and transfer it (see below)
 
 ### Export for transfer:
 
