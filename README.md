@@ -119,7 +119,6 @@ python3 edit_user.py remove olduser
 When you add users via `edit_user.py`, the file looks like this:
 
 ```yaml
-session_secret: 7a3f...long-hex-string...e91b
 session_timeout_hours: 24
 
 users:

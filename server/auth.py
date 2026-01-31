@@ -5,15 +5,16 @@ Supports:
   - Local users with bcrypt-hashed passwords (via auth.yaml)
   - LDAP / Active Directory authentication (optional)
   - Server-side sessions with signed cookies
+  - Rate limiting for brute force protection
 
 When auth.yaml does not exist, authentication is disabled entirely
 and the server operates in localhost-only mode (original behaviour).
 """
 
-import hashlib
-import hmac
 import logging
+import os
 import secrets
+from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -26,6 +27,116 @@ logger = logging.getLogger(__name__)
 # Path to the auth config file (project root)
 AUTH_CONFIG_PATH = Path(__file__).parent.parent / "auth.yaml"
 
+# Rate limiting configuration
+RATE_LIMIT_MAX_ATTEMPTS = 50  # Max failed attempts before lockout
+RATE_LIMIT_WINDOW_MINUTES = 15  # Lockout window in minutes
+
+
+class RateLimiter:
+    """
+    Rate limiter for brute force protection.
+
+    Tracks failed login attempts per username and per IP address.
+    Blocks further attempts after MAX_ATTEMPTS within WINDOW_MINUTES.
+    """
+
+    def __init__(self, max_attempts: int = RATE_LIMIT_MAX_ATTEMPTS,
+                 window_minutes: int = RATE_LIMIT_WINDOW_MINUTES):
+        self._max_attempts = max_attempts
+        self._window = timedelta(minutes=window_minutes)
+        # Key -> list of attempt timestamps
+        self._attempts: dict[str, list[datetime]] = defaultdict(list)
+
+    def _cleanup_old_attempts(self, key: str) -> None:
+        """Remove attempts older than the rate limit window."""
+        cutoff = datetime.now() - self._window
+        self._attempts[key] = [t for t in self._attempts[key] if t > cutoff]
+
+    def is_blocked(self, username: str, ip_address: str) -> bool:
+        """Check if username or IP is currently blocked."""
+        now = datetime.now()
+        cutoff = now - self._window
+
+        # Check username
+        user_key = f"user:{username.lower()}"
+        self._cleanup_old_attempts(user_key)
+        if len(self._attempts[user_key]) >= self._max_attempts:
+            return True
+
+        # Check IP
+        ip_key = f"ip:{ip_address}"
+        self._cleanup_old_attempts(ip_key)
+        if len(self._attempts[ip_key]) >= self._max_attempts:
+            return True
+
+        return False
+
+    def record_failure(self, username: str, ip_address: str) -> None:
+        """Record a failed login attempt."""
+        now = datetime.now()
+        user_key = f"user:{username.lower()}"
+        ip_key = f"ip:{ip_address}"
+
+        self._cleanup_old_attempts(user_key)
+        self._cleanup_old_attempts(ip_key)
+
+        self._attempts[user_key].append(now)
+        self._attempts[ip_key].append(now)
+
+    def clear_on_success(self, username: str, ip_address: str) -> None:
+        """Clear failed attempts after successful login."""
+        user_key = f"user:{username.lower()}"
+        ip_key = f"ip:{ip_address}"
+        self._attempts.pop(user_key, None)
+        self._attempts.pop(ip_key, None)
+
+    def get_remaining_attempts(self, username: str, ip_address: str) -> int:
+        """Get remaining attempts before lockout."""
+        user_key = f"user:{username.lower()}"
+        ip_key = f"ip:{ip_address}"
+
+        self._cleanup_old_attempts(user_key)
+        self._cleanup_old_attempts(ip_key)
+
+        user_attempts = len(self._attempts[user_key])
+        ip_attempts = len(self._attempts[ip_key])
+
+        return max(0, self._max_attempts - max(user_attempts, ip_attempts))
+
+    def get_lockout_remaining_seconds(self, username: str, ip_address: str) -> int:
+        """Get seconds remaining until lockout expires (0 if not locked)."""
+        if not self.is_blocked(username, ip_address):
+            return 0
+
+        user_key = f"user:{username.lower()}"
+        ip_key = f"ip:{ip_address}"
+
+        oldest_relevant = None
+        for key in [user_key, ip_key]:
+            if self._attempts.get(key):
+                first = min(self._attempts[key])
+                if oldest_relevant is None or first < oldest_relevant:
+                    oldest_relevant = first
+
+        if oldest_relevant:
+            unlock_time = oldest_relevant + self._window
+            remaining = (unlock_time - datetime.now()).total_seconds()
+            return max(0, int(remaining))
+
+        return 0
+
+
+# Global rate limiter instance
+_rate_limiter: Optional[RateLimiter] = None
+
+
+def get_rate_limiter() -> RateLimiter:
+    """Get or create the global rate limiter."""
+    global _rate_limiter
+    if _rate_limiter is None:
+        _rate_limiter = RateLimiter()
+    return _rate_limiter
+
 
 class AuthManager:
     """
@@ -34,7 +145,7 @@ class AuthManager:
     Authentication flow:
         1. User submits username + password to /login
         2. authenticate() checks local users first, then LDAP
-        3. On success, create_session() returns a signed token
+        3. On success, create_session() returns a random token
         4. Token is stored in an HttpOnly cookie
         5. validate_session() checks the token on each request
         6. destroy_session() removes the token on logout
@@ -47,7 +158,6 @@ class AuthManager:
         self._config_path = config_path
         self._config = self._load_config()
         self._sessions: dict[str, dict] = {}  # token -> {username, created_at}
-        self._secret: str = self._config.get("session_secret", "")
         self._timeout = timedelta(
             hours=self._config.get("session_timeout_hours", 24)
         )
@@ -63,24 +173,26 @@ class AuthManager:
     # ------------------------------------------------------------------
 
     def _load_config(self) -> dict:
-        """Load and validate auth.yaml."""
+        """Load and validate auth.yaml, with environment variable overrides."""
         with open(self._config_path) as f:
             config = yaml.safe_load(f)
         if not isinstance(config, dict):
             raise ValueError(f"auth.yaml must be a YAML mapping, got {type(config)}")
-        if config.get("session_secret", "CHANGE_ME") == "CHANGE_ME":
-            logger.warning(
-                "session_secret is 'CHANGE_ME' — generating a random one. "
-                "Run edit_user.py to persist a proper secret."
-            )
-            config["session_secret"] = secrets.token_hex(32)
+
+        # Environment variable override for LDAP bind_password
+        ldap_cfg = config.get("ldap", {})
+        if ldap_cfg.get("enabled"):
+            env_ldap_password = os.environ.get("VIBE_LDAP_BIND_PASSWORD")
+            if env_ldap_password:
+                ldap_cfg["bind_password"] = env_ldap_password
+                logger.info("Using LDAP bind_password from VIBE_LDAP_BIND_PASSWORD environment variable")
+
         return config
 
     def reload_config(self) -> None:
         """Hot-reload auth.yaml (e.g. after edit_user.py changes)."""
         try:
             self._config = self._load_config()
-            self._secret = self._config.get("session_secret", "")
             self._timeout = timedelta(
                 hours=self._config.get("session_timeout_hours", 24)
             )
@@ -92,13 +204,21 @@ class AuthManager:
     # Authentication
     # ------------------------------------------------------------------
 
+    # Dummy hash for timing-safe comparison when user doesn't exist.
+    # This ensures authentication takes the same time whether or not
+    # the username is valid, preventing user enumeration via timing.
+    _DUMMY_HASH = "$2b$12$000000000000000000000uKoqMVCTTroULWJLFy6UaGfYXMqNJSdq"
+
     def authenticate(self, username: str, password: str) -> bool:
         """
         Authenticate a user against local users, then LDAP.
 
         Returns True if credentials are valid.
+        Uses constant-time comparison to prevent user enumeration.
         """
         if not username or not password:
+            # Still do a dummy check to prevent timing leak
+            bcrypt.checkpw(b"dummy", self._DUMMY_HASH.encode("utf-8"))
             return False
 
         # 1. Check local users first
@@ -119,6 +239,8 @@ class AuthManager:
         if ldap_cfg.get("enabled"):
             return self._ldap_authenticate(username, password, ldap_cfg)
 
+        # User not found - do dummy bcrypt check to prevent timing-based enumeration
+        bcrypt.checkpw(password.encode("utf-8"), self._DUMMY_HASH.encode("utf-8"))
         return False
 
     # ------------------------------------------------------------------

@@ -11,13 +11,11 @@ Usage:
     python3 edit_user.py remove <username>     Remove a user
     python3 edit_user.py passwd <username>     Change a user's password
 
-If auth.yaml does not exist, it is created from auth.yaml.example
-with a randomly generated session_secret.
+If auth.yaml does not exist, it is created from auth.yaml.example.
 """
 
 import argparse
 import getpass
-import secrets
 import shutil
 import sys
 from datetime import datetime
@@ -42,12 +40,6 @@ def load_config() -> dict:
 
     with open(CONFIG_PATH) as f:
         config = yaml.safe_load(f) or {}
-
-    # Auto-generate session_secret if still placeholder
-    if config.get("session_secret", "CHANGE_ME") == "CHANGE_ME":
-        config["session_secret"] = secrets.token_hex(32)
-        save_config(config)
-        print("Generated random session_secret.")
 
     # Ensure users dict exists
     if "users" not in config or config["users"] is None:

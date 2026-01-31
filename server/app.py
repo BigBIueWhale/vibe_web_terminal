@@ -30,9 +30,9 @@ from fastapi.templating import Jinja2Templates
 from starlette.websockets import WebSocketState
 
 try:
-    from server.auth import create_auth_manager
+    from server.auth import create_auth_manager, get_rate_limiter
 except ImportError:
-    from auth import create_auth_manager
+    from auth import create_auth_manager, get_rate_limiter
 
 # =============================================================================
 # SECURITY CONFIGURATION
@@ -50,6 +50,7 @@ MAX_SESSIONS_PER_USER = 3
 # No automatic cleanup - containers persist until user deletes them
 SESSION_TIMEOUT_HOURS = None  # Disabled
 CLEANUP_INTERVAL_SECONDS = 300  # 5 minutes (only cleans up dead containers)
+AUTH_SESSION_CLEANUP_INTERVAL_SECONDS = 3600  # 1 hour (cleans up expired auth sessions)
 HOST_PORT_START = 17000
 HOST_PORT_END = 18000
 
@@ -223,9 +224,13 @@ class SessionManager:
         session.container_name = container_name
 
         # Create workspace directory
+        # Use 755 for directories (owner rwx, group/other rx)
+        # The container's vibe user (uid 1000) needs to be able to write
         workspace_dir = WORKSPACE_BASE / session.session_id
         workspace_dir.mkdir(parents=True, exist_ok=True)
-        os.chmod(workspace_dir, 0o777)
+        os.chmod(workspace_dir, 0o755)
+        # Change ownership to uid 1000 (vibe user in container)
+        os.chown(workspace_dir, 1000, 1000)
         session.workspace = str(workspace_dir)
 
         # Remove existing container if any
@@ -572,6 +577,20 @@ async def cleanup_old_sessions():
         await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
 
 
+async def cleanup_expired_auth_sessions():
+    """Periodically clean up expired authentication sessions to prevent memory leaks."""
+    while True:
+        try:
+            if auth_manager:
+                count = auth_manager.cleanup_expired_sessions()
+                if count > 0:
+                    logger.info(f"Cleaned up {count} expired auth session(s)")
+        except Exception as e:
+            logger.error(f"Auth session cleanup error: {e}")
+
+        await asyncio.sleep(AUTH_SESSION_CLEANUP_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
@@ -583,14 +602,20 @@ async def lifespan(app: FastAPI):
     docker_client = aiodocker.Docker()
     await session_manager.recover_existing_sessions()
     cleanup_task = asyncio.create_task(cleanup_old_sessions())
+    auth_cleanup_task = asyncio.create_task(cleanup_expired_auth_sessions())
     logger.info("Vibe Web Terminal server started")
 
     yield
 
     # Shutdown
     cleanup_task.cancel()
+    auth_cleanup_task.cancel()
     try:
         await cleanup_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await auth_cleanup_task
     except asyncio.CancelledError:
         pass
     if docker_client is not None:
@@ -683,9 +708,32 @@ async def login_page(request: Request, next: str = "/"):
     })
 
 
+def _get_client_ip(request: Request) -> str:
+    """Extract client IP from request, considering X-Forwarded-For."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        # Take the first IP in the chain (original client)
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _is_safe_redirect(url: str) -> bool:
+    """Check if a redirect URL is safe (relative path, same origin)."""
+    if not url:
+        return False
+    # Must start with / but not // (which would be protocol-relative URL)
+    if not url.startswith("/") or url.startswith("//"):
+        return False
+    # No scheme or netloc allowed
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    # For relative URLs starting with /, path should equal url and no scheme/netloc
+    return not parsed.scheme and not parsed.netloc
+
+
 @app.post("/login")
 async def login_submit(request: Request):
-    """Process login form submission."""
+    """Process login form submission with rate limiting."""
     if not auth_manager:
         return RedirectResponse("/", status_code=302)
 
@@ -694,9 +742,29 @@ async def login_submit(request: Request):
     password = form.get("password", "")
     next_url = form.get("next", "/")
 
+    # Validate redirect URL to prevent open redirect
+    if not _is_safe_redirect(next_url):
+        next_url = "/"
+
+    client_ip = _get_client_ip(request)
+    rate_limiter = get_rate_limiter()
+
+    # Check if blocked by rate limiter
+    if rate_limiter.is_blocked(username, client_ip):
+        remaining_seconds = rate_limiter.get_lockout_remaining_seconds(username, client_ip)
+        remaining_minutes = (remaining_seconds + 59) // 60  # Round up
+        logger.warning(f"Login blocked for user '{username}' from {client_ip} (rate limited)")
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": f"Too many failed attempts. Try again in {remaining_minutes} minute(s).",
+            "username": "",  # Don't pre-fill username
+            "next_url": next_url,
+        }, status_code=429)
+
     if auth_manager.authenticate(username, password):
+        rate_limiter.clear_on_success(username, client_ip)
         token = auth_manager.create_session(username)
-        response = RedirectResponse(next_url or "/", status_code=302)
+        response = RedirectResponse(next_url, status_code=302)
         response.set_cookie(
             key="vibe_session",
             value=token,
@@ -708,11 +776,19 @@ async def login_submit(request: Request):
         )
         return response
 
-    # Authentication failed
+    # Authentication failed - record attempt
+    rate_limiter.record_failure(username, client_ip)
+    remaining = rate_limiter.get_remaining_attempts(username, client_ip)
+    logger.info(f"Failed login for user '{username}' from {client_ip} ({remaining} attempts remaining)")
+
+    error_msg = "Invalid username or password."
+    if remaining <= 2 and remaining > 0:
+        error_msg += f" {remaining} attempt(s) remaining."
+
     return templates.TemplateResponse("login.html", {
         "request": request,
-        "error": "Invalid username or password.",
-        "username": username,
+        "error": error_msg,
+        "username": "",  # Don't pre-fill to prevent user enumeration
         "next_url": next_url,
     }, status_code=401)
 
@@ -868,10 +944,12 @@ async def upload_file(
     try:
         # Create parent directories if needed (for folder uploads)
         filepath.parent.mkdir(parents=True, exist_ok=True)
-        # Ensure all parent directories are writable by container user
+        # Set proper permissions on parent directories (755 for dirs)
+        # and change ownership to container user (uid 1000)
         for parent in filepath.parents:
             if parent.is_relative_to(workspace):
-                os.chmod(parent, 0o777)
+                os.chmod(parent, 0o755)
+                os.chown(parent, 1000, 1000)
 
         # Stream file to disk in chunks for large files
         async with aiofiles.open(filepath, "wb") as f:
@@ -880,8 +958,10 @@ async def upload_file(
                 await f.write(chunk)
                 total_size += len(chunk)
 
-        # Set proper permissions (777 so scripts are executable and container can write)
-        os.chmod(filepath, 0o777)
+        # Set proper permissions (644 for files, container user owns them)
+        # Scripts will need chmod +x inside container if needed
+        os.chmod(filepath, 0o644)
+        os.chown(filepath, 1000, 1000)
 
         return {
             "filename": filename,
@@ -1154,11 +1234,25 @@ async def my_sessions(request: Request):
 
 
 @app.get("/sessions")
-async def list_sessions():
-    """List all active sessions (admin endpoint).
+async def list_sessions(request: Request):
+    """List all active sessions (admin-only endpoint).
 
-    Session IDs are deliberately omitted to prevent enumeration attacks.
+    This endpoint requires authentication and is restricted to admin users
+    defined in auth.yaml. Session IDs are deliberately omitted to prevent
+    enumeration attacks.
+
+    When auth is disabled (localhost mode), this endpoint is accessible.
     """
+    # Authorization check: only allow if auth is disabled OR user is in admin list
+    if auth_manager:
+        username = get_current_user(request)
+        # Check if user is an admin (defined as having admin: true in auth.yaml users)
+        users_config = auth_manager._config.get("users", {})
+        user_config = users_config.get(username, {})
+        is_admin = user_config.get("admin", False)
+        if not is_admin:
+            raise HTTPException(status_code=403, detail="Admin access required")
+
     result = []
     for session in session_manager.list_sessions():
         try:

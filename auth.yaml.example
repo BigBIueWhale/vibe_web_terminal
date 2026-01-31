@@ -15,12 +15,6 @@
 #          It contains password hashes and secrets.
 # =============================================================================
 
-# Secret key for signing session cookies.
-# Auto-generated on first run of edit_user.py if left as "CHANGE_ME".
-# To generate manually:
-#     python3 -c "import secrets; print(secrets.token_hex(32))"
-session_secret: "CHANGE_ME"
-
 # How long login sessions last before requiring re-authentication (hours).
 session_timeout_hours: 24
 
@@ -41,6 +35,7 @@ session_timeout_hours: 24
 #     admin:
 #       password_hash: "$2b$12$LJ3m5E3rKlG..."
 #       created_at: "2025-01-29T12:00:00"
+#       admin: true   # Optional: grants access to /sessions endpoint
 #
 users: {}
 
@@ -91,6 +86,10 @@ ldap:
   # Service account used to SEARCH for users.
   # This account needs read access to the user search base.
   # For Active Directory, use: "CN=svc-vibe,OU=ServiceAccounts,DC=corp,DC=com"
+  #
+  # SECURITY: For production deployments, set bind_password via environment variable:
+  #     export VIBE_LDAP_BIND_PASSWORD="your-password-here"
+  # Environment variable takes precedence over this file.
   bind_dn: "cn=readonly,dc=example,dc=com"
   bind_password: "readonly_password"
 
