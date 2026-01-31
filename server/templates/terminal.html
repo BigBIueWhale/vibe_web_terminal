@@ -104,8 +104,11 @@
         }
 
         #terminal-display {
-            width: 100%;
-            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
         }
 
         /* xterm.js overrides for consistent styling */
@@ -819,7 +822,6 @@
             term.loadAddon(webLinksAddon);
 
             term.open(container);
-            fitAddon.fit();
 
             // Handle user input
             term.onData(data => {
@@ -850,8 +852,20 @@
             window.addEventListener('resize', handleResize);
             new ResizeObserver(handleResize).observe(container);
 
-            // Start connection
-            connect();
+            // Fit terminal and connect after layout is stable
+            // The container may not have final dimensions immediately
+            const doInitialFit = () => {
+                fitAddon.fit();
+                // Connect with proper dimensions
+                connect();
+            };
+
+            // Wait for next frame to ensure CSS layout is complete
+            requestAnimationFrame(() => {
+                fitAddon.fit();
+                // Another frame to be safe, then connect
+                requestAnimationFrame(doInitialFit);
+            });
         }
 
         // =================================================================
