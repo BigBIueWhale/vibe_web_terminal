@@ -7,10 +7,10 @@ ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 
 # ============================================================
-# SYSTEM PACKAGES
+# SYSTEM PACKAGES (consolidated into larger groups)
 # ============================================================
 
-# Core utilities & shell tools
+# Core utilities, shells, version control, network tools
 RUN apt-get update && apt-get install -y \
     curl \
     wget \
@@ -57,10 +57,6 @@ RUN apt-get update && apt-get install -y \
     entr \
     at \
     cron \
-    && rm -rf /var/lib/apt/lists/*
-
-# Git & version control tools
-RUN apt-get update && apt-get install -y \
     git \
     git-lfs \
     gitk \
@@ -70,10 +66,6 @@ RUN apt-get update && apt-get install -y \
     tig \
     subversion \
     mercurial \
-    && rm -rf /var/lib/apt/lists/*
-
-# Network utilities & diagnostics
-RUN apt-get update && apt-get install -y \
     socat \
     netcat-openbsd \
     iputils-ping \
@@ -93,7 +85,6 @@ RUN apt-get update && apt-get install -y \
     openssl \
     iperf3 \
     httpie \
-    ca-certificates \
     apt-transport-https \
     gnupg2 \
     wireguard-tools \
@@ -102,7 +93,9 @@ RUN apt-get update && apt-get install -y \
     sshfs \
     && rm -rf /var/lib/apt/lists/*
 
-# Build toolchain & compilers
+# Build toolchain, compilers, debugging tools, embedded dev
+# (clang/clang-format/clang-tidy only — full LLVM/lldb/lld/libc++ dropped to save ~300 MB)
+# (kept arm-none-eabi + aarch64; dropped armhf + riscv64 + qemu-system-misc to save ~300 MB)
 RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \
@@ -121,10 +114,6 @@ RUN apt-get update && apt-get install -y \
     ccache \
     ninja-build \
     meson \
-    && rm -rf /var/lib/apt/lists/*
-
-# Boost C++ libraries (commonly used subset instead of libboost-all-dev)
-RUN apt-get update && apt-get install -y \
     libboost-dev \
     libboost-filesystem-dev \
     libboost-system-dev \
@@ -137,11 +126,6 @@ RUN apt-get update && apt-get install -y \
     libboost-test-dev \
     libboost-log-dev \
     libboost-json-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# C/C++ debugging, analysis & sanitizer tools
-# (clang/clang-format/clang-tidy only — full LLVM/lldb/lld/libc++ dropped to save ~300 MB)
-RUN apt-get update && apt-get install -y \
     gdb \
     gdbserver \
     gdb-multiarch \
@@ -155,14 +139,7 @@ RUN apt-get update && apt-get install -y \
     binutils-multiarch \
     elfutils \
     dwarves \
-    strace \
-    ltrace \
     linux-tools-common \
-    && rm -rf /var/lib/apt/lists/*
-
-# Embedded & cross-compilation tools
-# (kept arm-none-eabi + aarch64; dropped armhf + riscv64 + qemu-system-misc to save ~300 MB)
-RUN apt-get update && apt-get install -y \
     gcc-arm-none-eabi \
     gdb-arm-none-eabi \
     libnewlib-arm-none-eabi \
@@ -177,7 +154,7 @@ RUN apt-get update && apt-get install -y \
     qemu-system-arm \
     && rm -rf /var/lib/apt/lists/*
 
-# Buildroot build dependencies (full list for Ubuntu 24.04)
+# Buildroot & Yocto dependencies
 RUN apt-get update && apt-get install -y \
     bc \
     cpio \
@@ -203,16 +180,8 @@ RUN apt-get update && apt-get install -y \
     dosfstools \
     mtools \
     fakeroot \
-    && rm -rf /var/lib/apt/lists/*
-
-# Yocto Project / OpenEmbedded build dependencies (Ubuntu 24.04)
-RUN apt-get update && apt-get install -y \
-    gawk \
     diffstat \
     chrpath \
-    socat \
-    cpio \
-    texinfo \
     python3-pexpect \
     python3-git \
     python3-jinja2 \
@@ -224,7 +193,6 @@ RUN apt-get update && apt-get install -y \
     mesa-common-dev \
     libglu1-mesa-dev \
     xterm \
-    iproute2 \
     gcc-multilib \
     g++-multilib \
     lib32z1-dev \
@@ -232,19 +200,15 @@ RUN apt-get update && apt-get install -y \
     pylint \
     rpcsvc-proto \
     lz4 \
-    xz-utils \
-    locales \
-    screen \
-    tmux \
     && rm -rf /var/lib/apt/lists/*
 
-# PCAP, Wireshark & network packet analysis
-# wireshark-common includes editcap, mergecap, capinfos, reordercap, text2pcap
+# Network packet analysis (wireshark-common includes editcap, mergecap, capinfos, etc.)
+# Python, Node.js, headless browser deps (Playwright provides its own Chromium)
+# Java Runtime (JRE only — JDK dropped to save ~50 MB; only needed for tabula-py)
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     libpcap-dev \
     tshark \
     wireshark-common \
-    tcpdump \
     tcpreplay \
     tcpflow \
     ngrep \
@@ -257,29 +221,14 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     ethtool \
     ipset \
     conntrack \
-    && rm -rf /var/lib/apt/lists/*
-
-# Python ecosystem
-RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     python3-venv \
     python3-dev \
     python3-setuptools \
     python3-wheel \
-    && rm -rf /var/lib/apt/lists/*
-
-# Node.js & JavaScript ecosystem
-RUN apt-get update && apt-get install -y \
     nodejs \
     npm \
-    && rm -rf /var/lib/apt/lists/*
-
-# Bun JavaScript/TypeScript runtime (installed globally)
-RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash
-
-# Headless browser dependencies (Playwright provides its own Chromium binary)
-RUN apt-get update && apt-get install -y \
     xvfb \
     xauth \
     dbus \
@@ -305,16 +254,16 @@ RUN apt-get update && apt-get install -y \
     xdg-utils \
     libu2f-udev \
     libvulkan1 \
-    && rm -rf /var/lib/apt/lists/*
-
-# HTML tidy & validation tools
-RUN apt-get update && apt-get install -y \
     tidy \
     libxml2-utils \
     xmlstarlet \
+    default-jre-headless \
     && rm -rf /var/lib/apt/lists/*
 
-# Pre-install global npm packages (browser automation, scraping, utilities)
+# Bun JavaScript/TypeScript runtime
+RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash
+
+# npm packages (browser automation, scraping, utilities, dev tools)
 RUN npm install -g \
     puppeteer \
     playwright \
@@ -390,10 +339,7 @@ RUN npm install -g \
     glob \
     minimatch \
     semver \
-    debug
-
-# More npm tools for agents: JSON/data manipulation, scaffolding, dev utils
-RUN npm install -g \
+    debug \
     fx \
     json-diff \
     json-server \
@@ -417,12 +363,7 @@ RUN npm install -g \
     clipboard-cli \
     open-cli
 
-# Java Runtime (JRE only — JDK dropped to save ~50 MB; only needed for tabula-py)
-RUN apt-get update && apt-get install -y \
-    default-jre-headless \
-    && rm -rf /var/lib/apt/lists/*
-
-# Libraries: image processing, PDF, graphics, ICU (for Hebrew/Arabic/Bidi)
+# Libraries: image processing, PDF, graphics, ICU, crypto, OCR, documents
 RUN apt-get update && apt-get install -y \
     libjpeg-dev \
     libpng-dev \
@@ -446,11 +387,6 @@ RUN apt-get update && apt-get install -y \
     icu-devtools \
     libfribidi-dev \
     libharfbuzz-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Cryptography & TLS system libraries
-RUN apt-get update && apt-get install -y \
-    libssl-dev \
     libsodium-dev \
     libgcrypt20-dev \
     libgnutls28-dev \
@@ -463,10 +399,6 @@ RUN apt-get update && apt-get install -y \
     gnutls-bin \
     p11-kit \
     softhsm2 \
-    && rm -rf /var/lib/apt/lists/*
-
-# OCR: Tesseract with language packs
-RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     tesseract-ocr-heb \
     tesseract-ocr-ara \
@@ -477,10 +409,6 @@ RUN apt-get update && apt-get install -y \
     tesseract-ocr-spa \
     libtesseract-dev \
     leptonica-progs \
-    && rm -rf /var/lib/apt/lists/*
-
-# PDF tools & document conversion
-RUN apt-get update && apt-get install -y \
     poppler-utils \
     libpoppler-dev \
     libpoppler-cpp-dev \
@@ -488,25 +416,11 @@ RUN apt-get update && apt-get install -y \
     qpdf \
     pandoc \
     wkhtmltopdf \
-    && rm -rf /var/lib/apt/lists/*
-
-# LibreOffice (minimal: writer + calc for doc conversion, dropped impress + draw to save ~600 MB)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libreoffice-writer \
-    libreoffice-calc \
-    && rm -rf /var/lib/apt/lists/*
-
-# Database clients & libraries
-RUN apt-get update && apt-get install -y \
     sqlite3 \
     libsqlite3-dev \
     postgresql-client \
     libpq-dev \
     redis-tools \
-    && rm -rf /var/lib/apt/lists/*
-
-# Math, science & data libraries (C-level)
-RUN apt-get update && apt-get install -y \
     liblapack-dev \
     libblas-dev \
     libopenblas-dev \
@@ -516,7 +430,13 @@ RUN apt-get update && apt-get install -y \
     libgdal-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Multimedia, audio & video conversion
+# LibreOffice (minimal: writer + calc for doc conversion, dropped impress + draw to save ~600 MB)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libreoffice-writer \
+    libreoffice-calc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Multimedia, audio, video, graphs, fonts
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libavcodec-dev \
@@ -543,17 +463,9 @@ RUN apt-get update && apt-get install -y \
     pngquant \
     jpegoptim \
     gifsicle \
-    && rm -rf /var/lib/apt/lists/*
-
-# Graph & visualization tools
-RUN apt-get update && apt-get install -y \
     graphviz \
     libgraphviz-dev \
     gnuplot \
-    && rm -rf /var/lib/apt/lists/*
-
-# Fonts: Hebrew, Arabic, CJK, general
-RUN apt-get update && apt-get install -y \
     fonts-dejavu \
     fonts-dejavu-core \
     fonts-dejavu-extra \
@@ -578,10 +490,6 @@ RUN apt-get update && apt-get install -y \
     fonts-indic \
     fonts-thai-tlwg \
     fontconfig \
-    && rm -rf /var/lib/apt/lists/*
-
-# Extra fonts: emoji, powerline, monospace, symbol, icon
-RUN apt-get update && apt-get install -y \
     fonts-noto-extra \
     fonts-symbola \
     fonts-powerline \
@@ -596,13 +504,11 @@ RUN apt-get update && apt-get install -y \
     fonts-ancient-scripts \
     fonts-wine \
     xfonts-utils \
-    && rm -rf /var/lib/apt/lists/* && \
-    fc-cache -fv
+    && rm -rf /var/lib/apt/lists/* && fc-cache -fv
 
-# Terminal rendering C/C++ development libraries
+# Terminal libraries, codecs (GStreamer dropped to save ~200 MB), language packs
+# Language packs available but do NOT change the default LANG/LC_ALL (C.UTF-8 supports full Unicode/emoji)
 RUN apt-get update && apt-get install -y \
-    libncurses-dev \
-    libncursesw5-dev \
     ncurses-term \
     libncursesw6 \
     ncurses-doc \
@@ -623,7 +529,6 @@ RUN apt-get update && apt-get install -y \
     libunibilium-dev \
     libutf8proc-dev \
     libfmt-dev \
-    dialog \
     whiptail \
     figlet \
     toilet \
@@ -634,10 +539,6 @@ RUN apt-get update && apt-get install -y \
     cmatrix \
     sl \
     lolcat \
-    && rm -rf /var/lib/apt/lists/*
-
-# Codecs: video, audio & image (ffmpeg codec dev libs — GStreamer dropped to save ~200 MB)
-RUN apt-get update && apt-get install -y \
     libavcodec-extra \
     libx264-dev \
     libx265-dev \
@@ -653,11 +554,6 @@ RUN apt-get update && apt-get install -y \
     libvorbis-dev \
     libflac-dev \
     libwavpack-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Language packs (available but do NOT change the default LANG/LC_ALL)
-# Default remains LANG=C.UTF-8 which already supports full Unicode/emoji
-RUN apt-get update && apt-get install -y \
     language-pack-en \
     language-pack-he \
     language-pack-ar \
@@ -678,29 +574,16 @@ RUN apt-get update && apt-get install -y \
 
 # Generate locales (Hebrew, Arabic, and common)
 # NOTE: Does NOT change the default locale (C.UTF-8), just makes these available
-RUN locale-gen en_US.UTF-8 && \
-    locale-gen he_IL.UTF-8 && \
-    locale-gen ar_SA.UTF-8 && \
-    locale-gen ru_RU.UTF-8 && \
-    locale-gen fr_FR.UTF-8 && \
-    locale-gen de_DE.UTF-8 && \
-    locale-gen es_ES.UTF-8 && \
-    locale-gen zh_CN.UTF-8 && \
-    locale-gen ja_JP.UTF-8 && \
-    locale-gen ko_KR.UTF-8 && \
-    locale-gen hi_IN.UTF-8 && \
-    locale-gen pt_BR.UTF-8 && \
-    locale-gen it_IT.UTF-8 && \
-    locale-gen pl_PL.UTF-8 && \
-    locale-gen tr_TR.UTF-8 && \
-    locale-gen uk_UA.UTF-8
+RUN locale-gen en_US.UTF-8 he_IL.UTF-8 ar_SA.UTF-8 ru_RU.UTF-8 fr_FR.UTF-8 \
+    de_DE.UTF-8 es_ES.UTF-8 zh_CN.UTF-8 ja_JP.UTF-8 ko_KR.UTF-8 \
+    hi_IN.UTF-8 pt_BR.UTF-8 it_IT.UTF-8 pl_PL.UTF-8 tr_TR.UTF-8 uk_UA.UTF-8
 
 # ============================================================
 # TERMINAL AGENT TOOLS
 # Tools that a CLI-based AI agent frequently uses
 # ============================================================
 
-# Agent essentials: search, text processing, structured data, automation
+# Agent essentials: search, text processing, structured data, automation, language runtimes
 RUN apt-get update && apt-get install -y \
     silversearcher-ag \
     cloc \
@@ -735,88 +618,8 @@ RUN apt-get update && apt-get install -y \
     nnn \
     vifm \
     trash-cli \
-    xdg-utils \
     xclip \
     xsel \
-    && rm -rf /var/lib/apt/lists/*
-
-# GitHub CLI (gh) - essential for agents interacting with GitHub
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-    | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-    | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
-    apt-get update && apt-get install -y gh && \
-    rm -rf /var/lib/apt/lists/*
-
-# Modern CLI replacements (pre-built binaries)
-# eza - modern ls with git integration, tree view, icons
-RUN wget -qO- https://github.com/eza-community/eza/releases/latest/download/eza_x86_64-unknown-linux-gnu.tar.gz \
-    | tar xz -C /usr/local/bin/
-
-# delta - beautiful git diffs with syntax highlighting
-RUN wget -qO /tmp/delta.deb https://github.com/dandavison/delta/releases/download/0.18.2/git-delta_0.18.2_amd64.deb && \
-    dpkg -i /tmp/delta.deb && rm /tmp/delta.deb
-
-# dust - modern du (disk usage)
-RUN wget -qO /tmp/dust.deb https://github.com/bootandy/dust/releases/download/v1.1.1/du-dust_1.1.1-1_amd64.deb && \
-    dpkg -i /tmp/dust.deb && rm /tmp/dust.deb
-
-# duf - modern df (disk free)
-RUN wget -qO /tmp/duf.deb https://github.com/muesli/duf/releases/download/v0.8.1/duf_0.8.1_linux_amd64.deb && \
-    dpkg -i /tmp/duf.deb && rm /tmp/duf.deb
-
-# glow - render Markdown in terminal
-RUN wget -qO /tmp/glow.deb https://github.com/charmbracelet/glow/releases/download/v2.0.0/glow_2.0.0_amd64.deb && \
-    dpkg -i /tmp/glow.deb && rm /tmp/glow.deb
-
-# lazygit - TUI git client
-RUN LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*') && \
-    curl -Lo /tmp/lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz" && \
-    tar xf /tmp/lazygit.tar.gz -C /usr/local/bin lazygit && rm /tmp/lazygit.tar.gz
-
-# just - modern make alternative (task runner)
-RUN wget -qO- https://just.systems/install.sh | bash -s -- --to /usr/local/bin
-
-# hyperfine - CLI benchmarking tool
-RUN wget -qO /tmp/hyperfine.deb https://github.com/sharkdp/hyperfine/releases/download/v1.19.0/hyperfine_1.19.0_amd64.deb && \
-    dpkg -i /tmp/hyperfine.deb && rm /tmp/hyperfine.deb
-
-# sd - modern sed replacement
-RUN wget -qO /tmp/sd.tar.gz https://github.com/chmln/sd/releases/download/v1.0.0/sd-v1.0.0-x86_64-unknown-linux-gnu.tar.gz && \
-    tar xf /tmp/sd.tar.gz -C /tmp && cp /tmp/sd-v1.0.0-x86_64-unknown-linux-gnu/sd /usr/local/bin/ && \
-    chmod +x /usr/local/bin/sd && rm -rf /tmp/sd*
-
-# tokei - fast code statistics
-RUN wget -qO /tmp/tokei.tar.gz https://github.com/XAMPPRocky/tokei/releases/download/v12.1.2/tokei-x86_64-unknown-linux-gnu.tar.gz && \
-    tar xf /tmp/tokei.tar.gz -C /usr/local/bin && chmod +x /usr/local/bin/tokei && rm /tmp/tokei.tar.gz
-
-# gron - make JSON greppable
-RUN wget -qO /tmp/gron.tar.gz https://github.com/tomnomnom/gron/releases/download/v0.7.1/gron-linux-amd64-0.7.1.tgz && \
-    tar xf /tmp/gron.tar.gz -C /usr/local/bin && chmod +x /usr/local/bin/gron && rm /tmp/gron.tar.gz
-
-# pup - jq for HTML (parse HTML from CLI)
-RUN wget -qO /tmp/pup.zip https://github.com/ericchiang/pup/releases/download/v0.4.0/pup_v0.4.0_linux_amd64.zip && \
-    unzip -o /tmp/pup.zip -d /usr/local/bin && chmod +x /usr/local/bin/pup && rm /tmp/pup.zip
-
-# starship - cross-shell prompt (available but not set as default)
-RUN curl -sS https://starship.rs/install.sh | sh -s -- --yes
-
-# rclone - cloud storage swiss army knife
-RUN curl -fsSL https://rclone.org/install.sh | bash
-
-# Zellij - modern terminal multiplexer (available alongside tmux)
-RUN wget -qO /tmp/zellij.tar.gz https://github.com/zellij-org/zellij/releases/latest/download/zellij-x86_64-unknown-linux-musl.tar.gz && \
-    tar xf /tmp/zellij.tar.gz -C /usr/local/bin && chmod +x /usr/local/bin/zellij && rm /tmp/zellij.tar.gz
-
-# Azure CLI (for Azure DevOps / TFS interaction)
-RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install Azure DevOps extension for az CLI
-RUN az extension add --name azure-devops 2>/dev/null || true
-
-# Additional language runtimes: Go, Rust toolchain support
-RUN apt-get update && apt-get install -y \
     golang-go \
     rustc \
     cargo \
@@ -828,740 +631,172 @@ RUN apt-get update && apt-get install -y \
     r-base-core \
     && rm -rf /var/lib/apt/lists/*
 
+# GitHub CLI (gh) - essential for agents interacting with GitHub
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
+    apt-get update && apt-get install -y gh && \
+    rm -rf /var/lib/apt/lists/*
+
+# Modern CLI tools (pre-built binaries):
+# eza (modern ls), delta (git diffs), dust (disk usage), duf (disk free), glow (markdown),
+# lazygit (TUI git), just (task runner), hyperfine (benchmarking), sd (sed replacement),
+# tokei (code stats), gron (greppable JSON), pup (jq for HTML), zellij (terminal multiplexer)
+RUN wget -qO- https://github.com/eza-community/eza/releases/latest/download/eza_x86_64-unknown-linux-gnu.tar.gz | tar xz -C /usr/local/bin/ && \
+    wget -qO /tmp/delta.deb https://github.com/dandavison/delta/releases/download/0.18.2/git-delta_0.18.2_amd64.deb && dpkg -i /tmp/delta.deb && rm /tmp/delta.deb && \
+    wget -qO /tmp/dust.deb https://github.com/bootandy/dust/releases/download/v1.1.1/du-dust_1.1.1-1_amd64.deb && dpkg -i /tmp/dust.deb && rm /tmp/dust.deb && \
+    wget -qO /tmp/duf.deb https://github.com/muesli/duf/releases/download/v0.8.1/duf_0.8.1_linux_amd64.deb && dpkg -i /tmp/duf.deb && rm /tmp/duf.deb && \
+    wget -qO /tmp/glow.deb https://github.com/charmbracelet/glow/releases/download/v2.0.0/glow_2.0.0_amd64.deb && dpkg -i /tmp/glow.deb && rm /tmp/glow.deb && \
+    wget -qO /tmp/hyperfine.deb https://github.com/sharkdp/hyperfine/releases/download/v1.19.0/hyperfine_1.19.0_amd64.deb && dpkg -i /tmp/hyperfine.deb && rm /tmp/hyperfine.deb && \
+    LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*') && \
+    curl -Lo /tmp/lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz" && \
+    tar xf /tmp/lazygit.tar.gz -C /usr/local/bin lazygit && rm /tmp/lazygit.tar.gz && \
+    wget -qO- https://just.systems/install.sh | bash -s -- --to /usr/local/bin && \
+    wget -qO /tmp/sd.tar.gz https://github.com/chmln/sd/releases/download/v1.0.0/sd-v1.0.0-x86_64-unknown-linux-gnu.tar.gz && \
+    tar xf /tmp/sd.tar.gz -C /tmp && cp /tmp/sd-v1.0.0-x86_64-unknown-linux-gnu/sd /usr/local/bin/ && chmod +x /usr/local/bin/sd && rm -rf /tmp/sd* && \
+    wget -qO /tmp/tokei.tar.gz https://github.com/XAMPPRocky/tokei/releases/download/v12.1.2/tokei-x86_64-unknown-linux-gnu.tar.gz && \
+    tar xf /tmp/tokei.tar.gz -C /usr/local/bin && chmod +x /usr/local/bin/tokei && rm /tmp/tokei.tar.gz && \
+    wget -qO /tmp/gron.tar.gz https://github.com/tomnomnom/gron/releases/download/v0.7.1/gron-linux-amd64-0.7.1.tgz && \
+    tar xf /tmp/gron.tar.gz -C /usr/local/bin && chmod +x /usr/local/bin/gron && rm /tmp/gron.tar.gz && \
+    wget -qO /tmp/pup.zip https://github.com/ericchiang/pup/releases/download/v0.4.0/pup_v0.4.0_linux_amd64.zip && \
+    unzip -o /tmp/pup.zip -d /usr/local/bin && chmod +x /usr/local/bin/pup && rm /tmp/pup.zip && \
+    wget -qO /tmp/zellij.tar.gz https://github.com/zellij-org/zellij/releases/latest/download/zellij-x86_64-unknown-linux-musl.tar.gz && \
+    tar xf /tmp/zellij.tar.gz -C /usr/local/bin && chmod +x /usr/local/bin/zellij && rm /tmp/zellij.tar.gz
+
+# Starship prompt & rclone
+RUN curl -sS https://starship.rs/install.sh | sh -s -- --yes && \
+    curl -fsSL https://rclone.org/install.sh | bash
+
+# Azure CLI
+RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash && \
+    rm -rf /var/lib/apt/lists/* && \
+    az extension add --name azure-devops 2>/dev/null || true
+
 # ============================================================
-# PYTHON PACKAGES (installed system-wide as root)
+# PYTHON PACKAGES (consolidated into larger groups)
 # ============================================================
 
-# Fix ALL system packages that lack RECORD files (installed by apt, blocks pip upgrades)
-# Find and remove every dist-info dir missing a RECORD file so pip can upgrade freely
+# Fix system packages and install base
 RUN find /usr/lib/python3/dist-packages /usr/lib/python3.12/dist-packages \
         -name '*.dist-info' -type d ! -exec test -f '{}/RECORD' \; -exec rm -rf '{}' + 2>/dev/null; \
     pip3 install --break-system-packages --no-cache-dir setuptools wheel packaging charset-normalizer
 
-# --- Data processing & analysis (core) ---
+# Data processing, analysis, visualization
 RUN pip3 install --break-system-packages --no-cache-dir \
-    numpy \
-    scipy \
-    pandas \
-    polars \
-    pyarrow \
-    dask[complete] \
-    modin[dask] \
-    xarray \
-    sympy \
-    statsmodels \
-    more-itertools \
-    toolz \
-    cytoolz \
-    joblib \
-    orjson \
-    ujson \
-    pyyaml \
-    toml \
-    tomli \
-    tomli-w \
-    python-dateutil \
-    arrow \
-    pendulum \
-    pytz \
-    chardet \
-    charset-normalizer \
-    tabulate \
-    prettytable \
-    tqdm
+    numpy scipy pandas polars pyarrow "dask[complete]" "modin[dask]" xarray sympy statsmodels \
+    more-itertools toolz cytoolz joblib orjson ujson pyyaml toml tomli tomli-w \
+    python-dateutil arrow pendulum pytz chardet charset-normalizer tabulate prettytable tqdm \
+    numba cython numexpr bottleneck swifter pandarallel \
+    missingno ydata-profiling sweetviz pandera great-expectations \
+    matplotlib seaborn plotly bokeh altair vega_datasets pygal wordcloud graphviz networkx pydot \
+    plotnine holoviews hvplot datashader colorcet panel streamlit gradio nicegui
 
-# --- Data processing (accelerators & profiling) ---
+# PDF, documents, RTL text, Azure, Office formats
 RUN pip3 install --break-system-packages --no-cache-dir \
-    numba \
-    cython \
-    numexpr \
-    bottleneck \
-    swifter \
-    pandarallel
+    pypdf PyPDF2 pdfplumber "pdfminer.six" PyMuPDF pikepdf reportlab fpdf2 weasyprint xhtml2pdf \
+    borb pdfrw img2pdf svglib "camelot-py[cv]" tabula-py pdf2image ocrmypdf pdf2docx \
+    python-bidi arabic-reshaper PyICU pyfribidi hebrew-tokenizer camel-tools \
+    azure-devops azure-cli-core azure-identity azure-storage-blob azure-storage-file-share msrest msal \
+    openpyxl xlrd xlsxwriter xlwt odfpy python-docx python-pptx python-calamine mammoth docx2txt striprtf ebooklib csvkit petl \
+    pypandoc markdownify html2text filetype python-magic xmltodict dicttoxml
 
-# --- Data quality, profiling & validation ---
+# Multimedia, OCR, image processing
 RUN pip3 install --break-system-packages --no-cache-dir \
-    missingno \
-    ydata-profiling \
-    sweetviz \
-    pandera \
-    great-expectations
+    moviepy ffmpeg-python pydub librosa soundfile audioread imageio-ffmpeg \
+    pytesseract Pillow opencv-python-headless scikit-image rawpy imageio Wand albumentations imgaug
 
-# --- Data visualization (core) ---
+# PyTorch CPU-only (installed first to prevent 700 MB+ default wheel)
 RUN pip3 install --break-system-packages --no-cache-dir \
-    matplotlib \
-    seaborn \
-    plotly \
-    bokeh \
-    altair \
-    vega_datasets \
-    pygal \
-    wordcloud \
-    graphviz \
-    networkx \
-    pydot
+    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
-# --- Data visualization (advanced) ---
+# OCR, search, LLM, ML
+RUN pip3 install --break-system-packages --no-cache-dir --no-deps easyocr && \
+    pip3 install --break-system-packages --no-cache-dir easyocr \
+    rank-bm25 whoosh lunr faiss-cpu annoy hnswlib chromadb sentence-transformers txtai \
+    openai anthropic huggingface-hub datasets transformers tokenizers sentencepiece tiktoken onnx onnxruntime \
+    scikit-learn xgboost lightgbm catboost imbalanced-learn feature-engine category_encoders \
+    optuna hyperopt shap lime eli5 mlflow
+
+# NLP, statistics, web scraping
 RUN pip3 install --break-system-packages --no-cache-dir \
-    plotnine \
-    holoviews \
-    hvplot \
-    datashader \
-    colorcet \
-    panel \
-    streamlit \
-    gradio \
-    nicegui
+    nltk spacy gensim textblob langdetect regex rapidfuzz "fuzzywuzzy[speedup]" ftfy unidecode python-Levenshtein polyglot wordfreq \
+    pingouin lifelines arviz emcee uncertainties \
+    requests "httpx[http2]" aiohttp beautifulsoup4 lxml cssselect html5lib scrapy parsel feedparser urllib3 \
+    selenium playwright pyppeteer splinter mechanicalsoup grab httpcore
 
-# --- PDF reading, creation & manipulation ---
+# HTML parsing, database, web frameworks
 RUN pip3 install --break-system-packages --no-cache-dir \
-    pypdf \
-    PyPDF2 \
-    pdfplumber \
-    "pdfminer.six" \
-    PyMuPDF \
-    pikepdf \
-    reportlab \
-    fpdf2 \
-    weasyprint \
-    xhtml2pdf \
-    borb \
-    pdfrw \
-    img2pdf \
-    svglib \
-    camelot-py[cv] \
-    tabula-py \
-    pdf2image \
-    ocrmypdf \
-    pdf2docx
+    html5-parser bleach nh3 selectolax pyquery tinycss2 cssutils css-parser premailer \
+    html-sanitizer htmlmin minify-html lxml-html-clean readability-lxml trafilatura newspaper3k boilerpy3 w3lib tldextract validators \
+    sqlalchemy alembic psycopg2-binary asyncpg redis pymongo motor peewee dataset "databases[sqlite,postgresql]" duckdb lancedb \
+    flask flask-cors flask-sqlalchemy flask-login flask-wtf flask-restful flask-socketio flask-talisman \
+    django django-cors-headers djangorestframework fastapi "uvicorn[standard]" starlette gunicorn dash tornado \
+    aiofiles websockets waitress hypercorn daphne twisted sanic falcon bottle cherrypy pyramid hug responder \
+    werkzeug httptools h11 h2 wsproto uvloop python-socketio channels gevent eventlet pyopenssl trustme
 
-# --- Hebrew / RTL / Bidi / Arabic text support ---
+# CLI, TUI, dev tools, testing, profiling, Jupyter
 RUN pip3 install --break-system-packages --no-cache-dir \
-    python-bidi \
-    arabic-reshaper \
-    PyICU \
-    pyfribidi \
-    hebrew-tokenizer \
-    camel-tools
+    click typer rich pydantic loguru structlog tenacity retry environs colorama termcolor blessed \
+    prompt-toolkit questionary alive-progress halo yaspin humanize inflect natsort semver \
+    textual textual-dev urwid npyscreen asciimatics pytermgui py-cui curtsies wcwidth emoji unicodedata2 \
+    pyfiglet art asciichartpy plotext drawille colored blessings sty ansicolors colorful pastel termtables terminaltables \
+    tox nox black ruff isort flake8 mypy pylint bandit safety vulture pyflakes autopep8 yapf pre-commit \
+    pytest pytest-cov pytest-asyncio pytest-xdist pytest-mock pytest-benchmark hypothesis coverage faker factory-boy responses vcrpy freezegun time-machine \
+    ipython ipdb pygments memory-profiler line-profiler scalene snakeviz py-spy objgraph pympler \
+    jupyter jupyterlab notebook nbconvert nbformat ipywidgets ipykernel jupytext papermill nbstripout
 
-# --- Azure DevOps / TFS client ---
+# Crypto, geo, cloud, serialization, config, utilities
 RUN pip3 install --break-system-packages --no-cache-dir \
-    azure-devops \
-    azure-cli-core \
-    azure-identity \
-    azure-storage-blob \
-    azure-storage-file-share \
-    msrest \
-    msal
+    cryptography pynacl pycryptodome pycryptodomex bcrypt argon2-cffi passlib hashids pyjwt "python-jose[cryptography]" \
+    itsdangerous fernet asn1crypto pyotp qrcode keyring paramiko fabric python-gnupg certifi cffi \
+    truststore certvalidator oscrypto tls-parser sslscan sslyze tlslite-ng scrypt jwcrypto secrets-manager \
+    shapely geopandas folium pyproj fiona rasterio geopy \
+    boto3 google-cloud-storage python-dotenv python-multipart jinja2 mako markdown python-markdown-math celery dramatiq apscheduler watchdog luigi prefect \
+    h5py tables fastparquet msgpack cbor2 protobuf flatbuffers lz4 zstandard brotli python-snappy avro-python3 fastavro \
+    attrs cattrs dataclasses-json marshmallow cerberus dynaconf python-decouple omegaconf hydra-core typeguard beartype \
+    sh plumbum invoke doit psutil supervisor gitpython pygithub dulwich \
+    cachetools diskcache dogpile.cache aiocache trio anyio \
+    boltons funcy pydash returns multipledispatch bidict sortedcontainers intervaltree bitarray mmh3 xxhash pybloom-live datasketch
 
-# --- Excel, Word, PowerPoint, document parsing & creation ---
+# Financial, PCAP, agent tools
 RUN pip3 install --break-system-packages --no-cache-dir \
-    openpyxl \
-    xlrd \
-    xlsxwriter \
-    xlwt \
-    odfpy \
-    python-docx \
-    python-pptx \
-    python-calamine \
-    mammoth \
-    docx2txt \
-    striprtf \
-    ebooklib \
-    csvkit \
-    petl
+    yfinance pandas-ta prophet arch pmdarima tslearn sktime \
+    scapy dpkt pyshark kamene pcapng python-pcapng impacket netaddr ipaddress netifaces \
+    bpython ptpython xonsh jupyter-console litecli pgcli mycli iredis \
+    glances ansible ansible-lint molecule \
+    tldr howdoi thefuck cookiecutter copier cruft bump2version semantic-version twine build flit hatch pdm poetry \
+    openapi-spec-validator jsonschema prance apispec flasgger datamodel-code-generator sqlacodegen \
+    watchfiles inotify-simple deepdiff dictdiffer jsonpatch jsonpointer unidiff patch-ng \
+    pexpect ptyprocess sarge delegator.py python-crontab schedule rq huey
 
-# --- File & document conversion ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    pypandoc \
-    markdownify \
-    html2text \
-    filetype \
-    python-magic \
-    xmltodict \
-    dicttoxml
-
-# --- Video, audio & multimedia (Python wrappers) ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    moviepy \
-    ffmpeg-python \
-    pydub \
-    librosa \
-    soundfile \
-    audioread \
-    imageio-ffmpeg
-
-# --- OCR & image processing ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    pytesseract \
-    Pillow \
-    opencv-python-headless \
-    scikit-image \
-    rawpy \
-    imageio \
-    Wand \
-    albumentations \
-    imgaug
-
-# --- PyTorch CPU-only (installed first to prevent 700 MB+ default wheel) ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    torch torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cpu
-
-# --- OCR (depends on torch) ---
-RUN pip3 install --break-system-packages --no-cache-dir --no-deps \
-    easyocr
-RUN pip3 install --break-system-packages --no-cache-dir \
-    easyocr
-
-# --- Search, retrieval & ranking (BM25, vector search, etc.) ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    rank-bm25 \
-    whoosh \
-    lunr \
-    faiss-cpu \
-    annoy \
-    hnswlib \
-    chromadb \
-    sentence-transformers \
-    txtai
-
-# --- LLM / AI client libraries ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    openai \
-    anthropic \
-    huggingface-hub \
-    datasets \
-    transformers \
-    tokenizers \
-    sentencepiece \
-    tiktoken \
-    onnx \
-    onnxruntime
-
-# --- Machine learning (core) ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    scikit-learn \
-    xgboost \
-    lightgbm \
-    catboost \
-    imbalanced-learn \
-    feature-engine \
-    category_encoders
-
-# --- ML: hyperparameter tuning & explainability ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    optuna \
-    hyperopt \
-    shap \
-    lime \
-    eli5 \
-    mlflow
-
-# --- NLP & text processing ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    nltk \
-    spacy \
-    gensim \
-    textblob \
-    langdetect \
-    regex \
-    rapidfuzz \
-    fuzzywuzzy[speedup] \
-    ftfy \
-    unidecode \
-    python-Levenshtein \
-    chardet \
-    polyglot \
-    wordfreq
-
-# --- Statistics & scientific ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    pingouin \
-    lifelines \
-    arviz \
-    emcee \
-    uncertainties
-
-# --- Web, HTTP & scraping ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    requests \
-    httpx[http2] \
-    aiohttp \
-    beautifulsoup4 \
-    lxml \
-    cssselect \
-    html5lib \
-    scrapy \
-    parsel \
-    feedparser \
-    urllib3 \
-    selenium \
-    playwright \
-    pyppeteer \
-    splinter \
-    mechanicalsoup \
-    grab \
-    httpcore
-
-# --- HTML rendering, parsing, validation & normalization ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    html5-parser \
-    bleach \
-    nh3 \
-    selectolax \
-    pyquery \
-    tinycss2 \
-    cssutils \
-    css-parser \
-    premailer \
-    html2text \
-    markdownify \
-    html-sanitizer \
-    htmlmin \
-    minify-html \
-    lxml-html-clean \
-    readability-lxml \
-    trafilatura \
-    newspaper3k \
-    boilerpy3 \
-    w3lib \
-    tldextract \
-    validators
-
-# --- Database & ORM ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    sqlalchemy \
-    alembic \
-    psycopg2-binary \
-    asyncpg \
-    redis \
-    pymongo \
-    motor \
-    peewee \
-    dataset \
-    databases[sqlite,postgresql] \
-    duckdb \
-    lancedb
-
-# --- Web frameworks, servers & dashboards ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    flask \
-    flask-cors \
-    flask-sqlalchemy \
-    flask-login \
-    flask-wtf \
-    flask-restful \
-    flask-socketio \
-    flask-talisman \
-    django \
-    django-cors-headers \
-    djangorestframework \
-    fastapi \
-    uvicorn[standard] \
-    starlette \
-    gunicorn \
-    dash \
-    tornado \
-    aiofiles \
-    websockets \
-    waitress \
-    hypercorn \
-    daphne \
-    twisted \
-    sanic \
-    falcon \
-    bottle \
-    cherrypy \
-    pyramid \
-    hug \
-    responder \
-    werkzeug \
-    httptools \
-    h11 \
-    h2 \
-    wsproto \
-    uvloop \
-    python-socketio \
-    channels \
-    gevent \
-    eventlet \
-    pyopenssl \
-    trustme
-
-# --- CLI, terminal & formatting ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    click \
-    typer \
-    rich \
-    pydantic \
-    loguru \
-    structlog \
-    tenacity \
-    retry \
-    environs \
-    colorama \
-    termcolor \
-    blessed \
-    prompt-toolkit \
-    questionary \
-    alive-progress \
-    halo \
-    yaspin \
-    humanize \
-    inflect \
-    natsort \
-    semver \
-    packaging
-
-# --- Terminal UI / TUI frameworks & rendering ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    textual \
-    textual-dev \
-    urwid \
-    npyscreen \
-    asciimatics \
-    pytermgui \
-    py-cui \
-    curtsies \
-    wcwidth \
-    emoji \
-    unicodedata2 \
-    pyfiglet \
-    art \
-    asciichartpy \
-    plotext \
-    drawille \
-    colored \
-    blessings \
-    sty \
-    ansicolors \
-    colorful \
-    pastel \
-    termtables \
-    tabulate \
-    terminaltables
-
-# --- Dev tools, linting & formatting ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    tox \
-    nox \
-    black \
-    ruff \
-    isort \
-    flake8 \
-    mypy \
-    pylint \
-    bandit \
-    safety \
-    vulture \
-    pyflakes \
-    autopep8 \
-    yapf \
-    pre-commit
-
-# --- Testing ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    pytest \
-    pytest-cov \
-    pytest-asyncio \
-    pytest-xdist \
-    pytest-mock \
-    pytest-benchmark \
-    hypothesis \
-    coverage \
-    faker \
-    factory-boy \
-    responses \
-    vcrpy \
-    freezegun \
-    time-machine
-
-# --- Profiling & debugging ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    ipython \
-    ipdb \
-    pygments \
-    memory-profiler \
-    line-profiler \
-    scalene \
-    snakeviz \
-    py-spy \
-    objgraph \
-    pympler
-
-# --- Jupyter ecosystem ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    jupyter \
-    jupyterlab \
-    notebook \
-    nbconvert \
-    nbformat \
-    ipywidgets \
-    ipykernel \
-    jupytext \
-    papermill \
-    nbstripout
-
-# --- Crypto, TLS, hashing & security ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    cryptography \
-    pyopenssl \
-    pynacl \
-    pycryptodome \
-    pycryptodomex \
-    bcrypt \
-    argon2-cffi \
-    passlib \
-    hashids \
-    pyjwt \
-    python-jose[cryptography] \
-    itsdangerous \
-    fernet \
-    asn1crypto \
-    pyotp \
-    qrcode \
-    keyring \
-    paramiko \
-    fabric \
-    python-gnupg \
-    certifi \
-    cffi \
-    truststore \
-    certvalidator \
-    oscrypto \
-    tls-parser \
-    sslscan \
-    sslyze \
-    tlslite-ng \
-    scrypt \
-    jwcrypto \
-    secrets-manager
-
-# --- Geospatial ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    shapely \
-    geopandas \
-    folium \
-    pyproj \
-    fiona \
-    rasterio \
-    geopy
-
-# --- Cloud, API & task orchestration ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    boto3 \
-    google-cloud-storage \
-    python-dotenv \
-    python-multipart \
-    jinja2 \
-    mako \
-    markdown \
-    python-markdown-math \
-    celery \
-    dramatiq \
-    apscheduler \
-    watchdog \
-    luigi \
-    prefect
-
-# --- Serialization, compression & data formats ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    h5py \
-    tables \
-    fastparquet \
-    msgpack \
-    cbor2 \
-    protobuf \
-    flatbuffers \
-    lz4 \
-    zstandard \
-    brotli \
-    python-snappy \
-    avro-python3 \
-    fastavro
-
-# --- Config, schema & data classes ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    attrs \
-    cattrs \
-    dataclasses-json \
-    marshmallow \
-    cerberus \
-    dynaconf \
-    python-decouple \
-    omegaconf \
-    hydra-core \
-    typeguard \
-    beartype
-
-# --- Shell, process & system utilities ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    sh \
-    plumbum \
-    invoke \
-    doit \
-    psutil \
-    supervisor
-
-# --- Git & VCS ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    gitpython \
-    pygithub \
-    dulwich
-
-# --- Caching ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    cachetools \
-    diskcache \
-    dogpile.cache \
-    aiocache
-
-# --- Async ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    trio \
-    anyio \
-    asyncpg
-
-# --- Extra general-purpose utilities ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    boltons \
-    funcy \
-    pydash \
-    returns \
-    toolz \
-    multipledispatch \
-    bidict \
-    sortedcontainers \
-    intervaltree \
-    bitarray \
-    mmh3 \
-    xxhash \
-    pybloom-live \
-    datasketch
-
-# --- Financial & time series ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    yfinance \
-    pandas-ta \
-    prophet \
-    arch \
-    pmdarima \
-    tslearn \
-    sktime
-
-# --- PCAP, packet analysis & network forensics ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    scapy \
-    dpkt \
-    pyshark \
-    kamene \
-    pcapng \
-    python-pcapng \
-    impacket \
-    netaddr \
-    ipaddress \
-    netifaces
-
-# --- Agent tools: interactive REPLs & enhanced shells ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    bpython \
-    ptpython \
-    xonsh \
-    ipython \
-    jupyter-console
-
-# --- Agent tools: database CLIs (interactive) ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    litecli \
-    pgcli \
-    mycli \
-    iredis
-
-# --- Agent tools: system monitoring & process management ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    glances \
-    ansible \
-    ansible-lint \
-    molecule
-
-# --- Agent tools: CLI helpers & productivity ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    tldr \
-    howdoi \
-    thefuck \
-    cookiecutter \
-    copier \
-    cruft \
-    bump2version \
-    semantic-version \
-    twine \
-    build \
-    flit \
-    hatch \
-    pdm \
-    poetry
-
-# --- Agent tools: code generation, scaffolding & API ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    openapi-spec-validator \
-    jsonschema \
-    prance \
-    apispec \
-    flasgger \
-    datamodel-code-generator \
-    sqlacodegen \
-    alembic \
-    cookiecutter
-
-# --- Agent tools: file watching, diffing & patching ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    watchfiles \
-    inotify-simple \
-    deepdiff \
-    dictdiffer \
-    jsonpatch \
-    jsonpointer \
-    unidiff \
-    patch-ng
-
-# --- Agent tools: subprocess, expect & automation ---
-RUN pip3 install --break-system-packages --no-cache-dir \
-    pexpect \
-    ptyprocess \
-    sarge \
-    delegator.py \
-    python-crontab \
-    schedule \
-    rq \
-    huey
-
-# Download NLTK data (common corpora for offline use)
-RUN python3 -c "import nltk; nltk.download('punkt'); nltk.download('punkt_tab'); nltk.download('stopwords'); nltk.download('wordnet'); nltk.download('averaged_perceptron_tagger'); nltk.download('averaged_perceptron_tagger_eng'); nltk.download('vader_lexicon'); nltk.download('maxent_ne_chunker'); nltk.download('maxent_ne_chunker_tab'); nltk.download('words'); nltk.download('omw-1.4'); nltk.download('universal_tagset')"
-
-# Download spaCy models for offline use (PIP_BREAK_SYSTEM_PACKAGES bypasses PEP 668)
-RUN PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m spacy download en_core_web_sm && \
+# Download NLTK data & spaCy models
+RUN python3 -c "import nltk; nltk.download('punkt'); nltk.download('punkt_tab'); nltk.download('stopwords'); nltk.download('wordnet'); nltk.download('averaged_perceptron_tagger'); nltk.download('averaged_perceptron_tagger_eng'); nltk.download('vader_lexicon'); nltk.download('maxent_ne_chunker'); nltk.download('maxent_ne_chunker_tab'); nltk.download('words'); nltk.download('omw-1.4'); nltk.download('universal_tagset')" && \
+    PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m spacy download en_core_web_sm && \
     PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m spacy download en_core_web_md
 
 # Install Playwright browsers (Chromium + Firefox) for headless browser automation
 # This pre-downloads browser binaries so they work offline
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
-RUN playwright install --with-deps chromium firefox
+RUN playwright install --with-deps chromium firefox && \
+    chmod -R a+rX /opt/playwright-browsers
 
 # Puppeteer: skip its own Chromium download, reuse Playwright's (~400 MB saved)
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/opt/playwright-browsers/chromium-*/chrome-linux/chrome
 
-# Make browser binaries accessible to all users
-RUN chmod -R a+rX /opt/playwright-browsers
-
-# Create convenience symlinks for Ubuntu-renamed binaries
+# Convenience symlinks
 RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd && \
     ln -sf /usr/bin/batcat /usr/local/bin/bat
 
-# Build ttyd from source for OSC 52 clipboard support
+# ============================================================
+# BUILD TTYD FROM SOURCE
+# ============================================================
+# Build ttyd from source for OSC 52 clipboard support.
 # Released 1.7.7 bundles xterm.js 5.4.0 without the clipboard addon.
 # Commit 9c87671 on main includes @xterm/addon-clipboard for OSC 52 browser clipboard.
+
+# ttyd build dependencies
 RUN apt-get update && apt-get install -y \
     libjson-c-dev \
     libuv1-dev \
@@ -1579,6 +814,7 @@ RUN git clone --depth 1 --branch v4.3.6 https://github.com/warmcat/libwebsockets
     rm -rf /tmp/lws
 
 # Build ttyd: frontend (xterm.js 5.5.0 + clipboard addon) then C backend
+# Commit 9c87671 includes @xterm/addon-clipboard for OSC 52 browser clipboard
 RUN git clone https://github.com/tsl0922/ttyd.git /tmp/ttyd && \
     cd /tmp/ttyd && git checkout 9c87671ccae9eefa3c01b08169272c0922e7cdff && \
     npm install -g corepack && corepack enable && \
@@ -1592,6 +828,10 @@ RUN git clone https://github.com/tsl0922/ttyd.git /tmp/ttyd && \
 # Install uv for Python package management
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
+
+# ============================================================
+# USER SETUP
+# ============================================================
 
 # Create user with password "password"
 RUN useradd -m -s /bin/bash -G sudo vibe \
@@ -1620,7 +860,6 @@ RUN mkdir -p /home/vibe/.vibe
 # Copy vibe configuration (will be added at build time)
 COPY --chown=vibe:vibe config/vibe-config.toml /home/vibe/.vibe/config.toml
 COPY --chown=vibe:vibe config/vibe-env /home/vibe/.vibe/.env
-# Pre-trust workspace folder so AGENTS.md is auto-loaded
 COPY --chown=vibe:vibe config/vibe-trusted-folders.toml /home/vibe/.vibe/trusted_folders.toml
 
 # Copy session startup script (for persistent tmux sessions)
