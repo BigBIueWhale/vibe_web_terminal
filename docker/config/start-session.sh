@@ -2,6 +2,9 @@
 # Start or attach to a persistent tmux session
 # This ensures the terminal state survives page refreshes
 
+# Fix workspace ownership (mounted from host with different UID)
+sudo chown -R vibe:vibe /home/vibe/workspace 2>/dev/null
+
 SESSION_NAME="vibe"
 
 # Check if tmux session exists
