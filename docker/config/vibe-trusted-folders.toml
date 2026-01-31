@@ -1,5 +1,14 @@
-# Pre-configured trusted folders for Vibe v2.x
-# AGENTS.md in trusted folders are auto-loaded into system prompt
+# Pre-trust the workspace to enable project-local Vibe configuration.
+# Without this, users would see a trust dialog before Vibe loads any of:
+#   - AGENTS.md / VIBE.md / .vibe.md (project instructions)
+#   - .vibe/config.toml (project-specific config overrides)
+#   - .vibe/tools/ (custom project tools)
+#   - .vibe/skills/ (custom project skills)
+#   - .vibe/agents/ (custom agent profiles)
+#   - .vibe/prompts/ (custom prompts)
+#
+# Note: Only this exact path is trusted. Subdirectories (e.g., workspace/myproject/)
+# will prompt for trust separately when they contain .vibe/ or AGENTS.md.
 
 trusted = ["/home/vibe/workspace"]
 untrusted = []

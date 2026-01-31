@@ -846,11 +846,15 @@ WORKDIR /home/vibe
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/home/vibe/.local/bin:$PATH"
 
-# Install Vibe CLI v2.0.2 from source with streaming disabled
-# Streaming breaks tool calls with Ollama/vLLM backends (GitHub issue #252)
-# Patch: cli.py line 174: enable_streaming=True -> enable_streaming=False
+# Copy system prompt suffix (environment context to append to cli.md)
+COPY config/system-prompt-suffix.md /tmp/system-prompt-suffix.md
+
+# Install Vibe CLI v2.0.2 from source with patches:
+# 1. Disable streaming (breaks tool calls with Ollama/vLLM backends, GitHub issue #252)
+# 2. Append Docker environment context to system prompt (cli.md)
 RUN git clone --branch v2.0.2 --depth 1 https://github.com/mistralai/mistral-vibe /tmp/vibe \
     && sed -i 's/enable_streaming=True/enable_streaming=False/' /tmp/vibe/vibe/cli/cli.py \
+    && cat /tmp/system-prompt-suffix.md >> /tmp/vibe/vibe/core/prompts/cli.md \
     && /home/vibe/.local/bin/uv tool install /tmp/vibe \
     && rm -rf /tmp/vibe
 
@@ -871,9 +875,6 @@ COPY --chown=vibe:vibe config/tmux.conf /home/vibe/.tmux.conf
 
 # Create workspace directory for user files
 RUN mkdir -p /home/vibe/workspace
-
-# Copy AGENTS.md to workspace (auto-loaded by Vibe v2.x when folder is trusted)
-COPY --chown=vibe:vibe config/AGENTS.md /home/vibe/workspace/AGENTS.md
 
 # Create a nice bashrc
 RUN echo 'export PS1="\[\033[1;32m\]\u@vibe-terminal\[\033[0m\]:\[\033[1;34m\]\w\[\033[0m\]\$ "' >> /home/vibe/.bashrc \
