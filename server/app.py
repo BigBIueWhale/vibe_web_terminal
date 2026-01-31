@@ -253,7 +253,13 @@ class SessionManager:
             },
         }
 
-        container = await docker_client.containers.run(config=config, name=container_name)
+        try:
+            container = await docker_client.containers.run(config=config, name=container_name)
+        except Exception as e:
+            raise RuntimeError(
+                f"docker.containers.run failed for image={DOCKER_IMAGE}, "
+                f"container={container_name}, port={session.port}: {type(e).__name__}: {e}"
+            ) from e
         session.container_id = container.id
 
         logger.info(f"Created container {container_name} on port {session.port}")
