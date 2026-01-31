@@ -1609,7 +1609,7 @@ ENV PATH="/home/vibe/.local/bin:$PATH"
 # Install Vibe CLI v2.0.2 from source with streaming disabled
 # Streaming breaks tool calls with Ollama/vLLM backends (GitHub issue #252)
 # Patch: cli.py line 174: enable_streaming=True -> enable_streaming=False
-RUN git clone --branch v2.0.2 --depth 1 https://github.com/mistralai/vibe.git /tmp/vibe \
+RUN git clone --branch v2.0.2 --depth 1 https://github.com/mistralai/mistral-vibe /tmp/vibe \
     && sed -i 's/enable_streaming=True/enable_streaming=False/' /tmp/vibe/vibe/cli/cli.py \
     && /home/vibe/.local/bin/uv tool install /tmp/vibe \
     && rm -rf /tmp/vibe
