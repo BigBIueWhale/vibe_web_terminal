@@ -7,6 +7,7 @@ Each user gets a unique session with a persistent container they can return to.
 """
 
 import asyncio
+import base64
 import io
 import json
 import logging
@@ -17,17 +18,18 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 import aiofiles
 import aiodocker
 import aiodocker.exceptions
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+import websockets
+import websockets.exceptions
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from starlette.websockets import WebSocketState
 
 try:
     from server.auth import create_auth_manager, get_rate_limiter
@@ -495,6 +497,145 @@ class SessionOwnerStore:
     def all_session_ids(self) -> set[str]:
         """Get all tracked session IDs."""
         return set(self._owners.keys())
+
+
+# =============================================================================
+# HTTP TERMINAL TRANSPORT
+# =============================================================================
+# Long-polling HTTP transport for terminal connections.
+# Maintains WebSocket connections to ttyd on localhost while exposing
+# HTTP endpoints to clients (works through any firewall/proxy).
+# =============================================================================
+
+
+@dataclass
+class HTTPTerminalSession:
+    """
+    Tracks an HTTP terminal session.
+
+    Maintains:
+    - A WebSocket connection to ttyd (localhost, always works)
+    - An output buffer with cursor tracking for resumable polling
+    - A list of waiting poll requests (for efficient long-polling)
+    """
+    session_id: str
+    ttyd_ws: Optional[websockets.WebSocketClientProtocol] = None
+    output_buffer: bytearray = field(default_factory=bytearray)
+    cursor: int = 0  # Tracks how much data has been trimmed from buffer start
+    max_buffer_size: int = 256 * 1024  # 256KB ring buffer
+    waiters: list = field(default_factory=list)  # Waiting poll requests (asyncio.Event)
+    connected: bool = False
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    reader_task: Optional[asyncio.Task] = None
+    username: str = ""  # Owner of this connection
+
+
+# Per-session HTTP terminal connections (session_id -> HTTPTerminalSession)
+_http_terminal_sessions: Dict[str, HTTPTerminalSession] = {}
+_http_terminal_lock = asyncio.Lock()  # For creating/removing sessions
+
+
+async def _connect_http_terminal(
+    session_id: str,
+    port: int,
+    cols: int,
+    rows: int,
+    username: str
+) -> HTTPTerminalSession:
+    """
+    Establish WebSocket connection to ttyd for HTTP transport.
+
+    This creates a bridge: HTTP client <-> app.py <-> ttyd (WebSocket on localhost)
+    """
+    http_session = HTTPTerminalSession(session_id=session_id, username=username)
+
+    ttyd_url = f"ws://127.0.0.1:{port}/ws"
+    http_session.ttyd_ws = await websockets.connect(
+        ttyd_url,
+        subprotocols=["tty"],
+        ping_interval=20,
+        ping_timeout=20,
+        close_timeout=5,
+    )
+
+    # Send initial handshake (terminal size)
+    init_msg = json.dumps({"columns": cols, "rows": rows})
+    await http_session.ttyd_ws.send(init_msg.encode("utf-8"))
+
+    http_session.connected = True
+
+    # Start background task to read ttyd output
+    http_session.reader_task = asyncio.create_task(
+        _read_ttyd_output(http_session)
+    )
+
+    return http_session
+
+
+async def _read_ttyd_output(http_session: HTTPTerminalSession):
+    """
+    Background task: read from ttyd WebSocket, buffer for polling clients.
+
+    Handles ttyd's protocol:
+    - '0' + data = terminal output
+    - '1' + data = window title
+    - '2' + data = preferences
+    """
+    try:
+        async for message in http_session.ttyd_ws:
+            if isinstance(message, bytes) and len(message) > 0:
+                cmd = message[0:1]
+                payload = message[1:]
+
+                if cmd == b"0":  # OUTPUT
+                    async with http_session.lock:
+                        # Append to ring buffer
+                        http_session.output_buffer.extend(payload)
+
+                        # Trim if exceeds max size (keep recent data)
+                        if len(http_session.output_buffer) > http_session.max_buffer_size:
+                            trim_amount = len(http_session.output_buffer) - http_session.max_buffer_size
+                            http_session.output_buffer = http_session.output_buffer[trim_amount:]
+                            http_session.cursor += trim_amount
+
+                        # Wake up any waiting poll requests
+                        for waiter in http_session.waiters:
+                            waiter.set()
+                        http_session.waiters.clear()
+
+                # Ignore title/preferences for now (could be added to poll response)
+
+    except websockets.exceptions.ConnectionClosed:
+        logger.info(f"ttyd WebSocket closed for session {http_session.session_id[:12]}")
+    except Exception as e:
+        logger.error(f"ttyd reader error for session {http_session.session_id[:12]}: {e}")
+    finally:
+        http_session.connected = False
+        # Wake any waiters so they see the disconnected state
+        async with http_session.lock:
+            for waiter in http_session.waiters:
+                waiter.set()
+            http_session.waiters.clear()
+
+
+async def _cleanup_http_terminal(session_id: str):
+    """Clean up an HTTP terminal session."""
+    async with _http_terminal_lock:
+        http_session = _http_terminal_sessions.pop(session_id, None)
+
+    if http_session:
+        http_session.connected = False
+        if http_session.reader_task:
+            http_session.reader_task.cancel()
+            try:
+                await http_session.reader_task
+            except asyncio.CancelledError:
+                pass
+        if http_session.ttyd_ws:
+            try:
+                await http_session.ttyd_ws.close()
+            except Exception:
+                pass
 
 
 # Global instances
@@ -1277,10 +1418,7 @@ async def list_sessions(request: Request):
 
 
 # =============================================================================
-# WEBSOCKET AND HTTP PROXY FOR TTYD
-# =============================================================================
-# All browser connections now go through port 8080 - no direct port access needed
-# This provides a single entry point and better security
+# INTERNAL UTILITIES
 # =============================================================================
 
 async def get_http_client() -> httpx.AsyncClient:
@@ -1291,176 +1429,270 @@ async def get_http_client() -> httpx.AsyncClient:
     return _http_client
 
 
-def get_session_port(session_id: str) -> Optional[int]:
-    """Get the ttyd port for a session, or None if not found."""
-    return session_manager.get_session_port(session_id)
+# =============================================================================
+# HTTP LONG-POLLING TERMINAL ENDPOINTS
+# =============================================================================
+# These endpoints provide firewall-friendly terminal access using standard
+# HTTP requests instead of WebSocket. Works through any corporate proxy.
+# =============================================================================
 
 
-@app.websocket("/ttyd/{session_id}/ws")
-async def websocket_proxy(websocket: WebSocket, session_id: str):
+@app.post("/terminal/{session_id}/connect")
+async def terminal_http_connect(
+    request: Request,
+    session_id: str,
+    cols: int = 80,
+    rows: int = 24
+):
     """
-    WebSocket proxy for ttyd terminal connections.
+    Initialize HTTP terminal session.
 
-    Includes authentication and ownership checks.
+    Creates a WebSocket connection to ttyd (localhost) and starts buffering output.
+    The client then uses /poll, /input, and /resize endpoints.
     """
-    # Auth check (HTTP middleware doesn't cover WebSocket connections)
+    # Authentication
+    username = get_current_user(request)
     if auth_manager:
-        token = websocket.cookies.get("vibe_session")
-        ws_username = auth_manager.validate_session(token) if token else None
-        if not ws_username:
-            await websocket.close(code=4001, reason="Unauthorized")
-            return
-    else:
-        ws_username = "__anonymous__"
+        token = request.cookies.get("vibe_session")
+        if not token or not auth_manager.validate_session(token):
+            raise HTTPException(status_code=401, detail="Unauthorized")
 
     # Ownership check
-    if owner_store:
-        session_owner = owner_store.get_owner(session_id)
-        if session_owner is None or session_owner != ws_username:
-            await websocket.close(code=4003, reason="Access denied")
-            return
+    verify_session_ownership(request, session_id)
 
-    # Acquire session reference (prevents deletion while we're connected)
-    try:
-        session = await session_manager.acquire_session_ref(session_id)
-    except SessionError:
-        await websocket.close(code=4004, reason="Session not found")
-        return
+    # Get session port
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.port is None:
+        raise HTTPException(status_code=503, detail="Session not ready")
 
-    try:
-        port = session.port  # Safe - we hold reference
-        # Accept with 'tty' subprotocol - required by ttyd
-        await websocket.accept(subprotocol="tty")
-        logger.info(f"WebSocket proxy started for session {session_id[:12]} -> port {port}")
-
-        # Connect to ttyd's WebSocket
-        ttyd_ws = None
-        try:
-            import websockets
-            ttyd_url = f"ws://127.0.0.1:{port}/ws"
-
-            async with websockets.connect(
-                ttyd_url,
-                subprotocols=["tty"],  # Required by ttyd
-                ping_interval=20,  # Send ping every 20 seconds
-                ping_timeout=20,   # Wait 20 seconds for pong
-                close_timeout=5,   # 5 second close timeout
-            ) as ttyd_ws:
-
-                async def forward_to_ttyd():
-                    """Forward messages from browser to ttyd."""
-                    try:
-                        while True:
-                            if websocket.client_state != WebSocketState.CONNECTED:
-                                break
-                            data = await websocket.receive()
-                            if data["type"] == "websocket.receive":
-                                if "bytes" in data:
-                                    await ttyd_ws.send(data["bytes"])
-                                elif "text" in data:
-                                    await ttyd_ws.send(data["text"])
-                            elif data["type"] == "websocket.disconnect":
-                                break
-                    except WebSocketDisconnect:
-                        pass
-                    except Exception as e:
-                        logger.debug(f"Forward to ttyd ended: {e}")
-
-                async def forward_to_browser():
-                    """Forward messages from ttyd to browser."""
-                    try:
-                        async for message in ttyd_ws:
-                            if websocket.client_state != WebSocketState.CONNECTED:
-                                break
-                            if isinstance(message, bytes):
-                                await websocket.send_bytes(message)
-                            else:
-                                await websocket.send_text(message)
-                    except Exception as e:
-                        logger.debug(f"Forward to browser ended: {e}")
-
-                # Run both directions concurrently
-                await asyncio.gather(
-                    forward_to_ttyd(),
-                    forward_to_browser(),
-                    return_exceptions=True
-                )
-
-        except websockets.exceptions.ConnectionClosed as e:
-            logger.info(f"ttyd WebSocket closed for session {session_id[:12]}: {e}")
-        except (OSError, ConnectionRefusedError) as e:
-            # ttyd is not running - container likely stopped
-            logger.warning(f"Cannot connect to ttyd for session {session_id[:12]}: {e}")
-        except Exception as e:
-            # Log the full exception type for debugging "max depth exceeded" and similar errors
-            logger.error(f"WebSocket proxy error for session {session_id[:12]}: {type(e).__name__}: {e}")
-        finally:
-            # Clean up WebSocket
-            if websocket.client_state == WebSocketState.CONNECTED:
+    # Check if already connected
+    async with _http_terminal_lock:
+        existing = _http_terminal_sessions.get(session_id)
+        if existing and existing.connected:
+            # Already connected - just return success
+            # Update terminal size if different
+            if existing.ttyd_ws:
                 try:
-                    await websocket.close()
+                    resize_msg = json.dumps({"columns": cols, "rows": rows})
+                    await existing.ttyd_ws.send(b"1" + resize_msg.encode("utf-8"))
                 except Exception:
                     pass
-            logger.info(f"WebSocket proxy ended for session {session_id[:12]}")
-    finally:
-        # Always release the session reference
-        await session_manager.release_session_ref(session)
+            return {"status": "connected", "session_id": session_id}
 
+        # Clean up old disconnected session if any
+        if existing:
+            await _cleanup_http_terminal(session_id)
 
-@app.get("/ttyd/{session_id}/{path:path}")
-@app.get("/ttyd/{session_id}")
-async def http_proxy(request: Request, session_id: str, path: str = ""):
-    """
-    HTTP proxy for ttyd static content (HTML, JS, CSS).
-
-    Proxies HTTP requests to ttyd, enabling all traffic through port 8080.
-    """
-    session = session_manager.get_session(session_id)
-    if not session or session.port is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    port = session.port
-
-    # Build the target URL
-    target_url = f"http://127.0.0.1:{port}/{path}"
-    if request.url.query:
-        target_url += f"?{request.url.query}"
-
+    # Connect to ttyd
     try:
-        client = await get_http_client()
+        http_session = await _connect_http_terminal(
+            session_id, session.port, cols, rows, username
+        )
+        async with _http_terminal_lock:
+            _http_terminal_sessions[session_id] = http_session
+        logger.info(f"HTTP terminal connected for session {session_id[:12]}")
+        return {"status": "connected", "session_id": session_id}
+    except Exception as e:
+        logger.error(f"Failed to connect HTTP terminal for {session_id[:12]}: {e}")
+        raise HTTPException(status_code=503, detail="Failed to connect to terminal")
 
-        # Forward the request with appropriate headers
-        headers = {}
-        for key, value in request.headers.items():
-            # Skip hop-by-hop headers
-            if key.lower() not in ('host', 'connection', 'keep-alive', 'transfer-encoding',
-                                   'upgrade', 'proxy-connection', 'proxy-authenticate',
-                                   'proxy-authorization', 'te', 'trailers'):
-                headers[key] = value
 
-        response = await client.get(target_url, headers=headers)
+@app.get("/terminal/{session_id}/poll")
+async def terminal_poll(
+    request: Request,
+    session_id: str,
+    cursor: int = 0,
+    timeout: float = 30.0
+):
+    """
+    Long-poll for terminal output.
 
-        # Build response headers
-        response_headers = {}
-        for key, value in response.headers.items():
-            if key.lower() not in ('content-encoding', 'content-length', 'transfer-encoding',
-                                   'connection'):
-                response_headers[key] = value
+    Returns buffered output since the given cursor position.
+    If no new data, waits up to `timeout` seconds for data to arrive.
 
-        return Response(
-            content=response.content,
-            status_code=response.status_code,
-            headers=response_headers,
-            media_type=response.headers.get('content-type')
+    Response:
+    - cursor: New cursor position (use for next poll)
+    - data: Base64-encoded terminal output
+    - missed: True if client missed some data (cursor was behind buffer start)
+    """
+    # Authentication
+    if auth_manager:
+        token = request.cookies.get("vibe_session")
+        if not token or not auth_manager.validate_session(token):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Ownership check
+    verify_session_ownership(request, session_id)
+
+    # Get HTTP terminal session
+    http_session = _http_terminal_sessions.get(session_id)
+    if not http_session:
+        raise HTTPException(
+            status_code=404,
+            detail="Terminal not connected. Call /connect first."
         )
 
-    except httpx.ConnectError:
-        # Container's ttyd is not responding - likely container is gone
-        logger.warning(f"Cannot connect to ttyd for session {session_id[:12]} on port {port}")
-        raise HTTPException(status_code=503, detail="Terminal service unavailable - container may have stopped")
-    except httpx.RequestError as e:
-        logger.error(f"HTTP proxy error for session {session_id[:12]}: {e}")
-        raise HTTPException(status_code=502, detail="Failed to connect to terminal service")
+    if not http_session.connected:
+        raise HTTPException(status_code=410, detail="Terminal disconnected")
+
+    # Clamp timeout
+    timeout = max(1.0, min(timeout, 60.0))
+
+    # Check for immediately available data
+    async with http_session.lock:
+        buffer_start_cursor = http_session.cursor
+        buffer_end_cursor = buffer_start_cursor + len(http_session.output_buffer)
+
+        # If client cursor is behind buffer start, they missed data
+        effective_cursor = max(cursor, buffer_start_cursor)
+
+        # Check if we have new data
+        if effective_cursor < buffer_end_cursor:
+            offset = effective_cursor - buffer_start_cursor
+            data = bytes(http_session.output_buffer[offset:])
+            return {
+                "cursor": buffer_end_cursor,
+                "data": base64.b64encode(data).decode("ascii"),
+                "missed": cursor < buffer_start_cursor
+            }
+
+    # No data available, wait for new data or timeout
+    waiter = asyncio.Event()
+    http_session.waiters.append(waiter)
+
+    try:
+        await asyncio.wait_for(waiter.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        pass
+    finally:
+        if waiter in http_session.waiters:
+            http_session.waiters.remove(waiter)
+
+    # Check again after waiting
+    async with http_session.lock:
+        buffer_start_cursor = http_session.cursor
+        buffer_end_cursor = buffer_start_cursor + len(http_session.output_buffer)
+        effective_cursor = max(cursor, buffer_start_cursor)
+
+        if effective_cursor < buffer_end_cursor:
+            offset = effective_cursor - buffer_start_cursor
+            data = bytes(http_session.output_buffer[offset:])
+            return {
+                "cursor": buffer_end_cursor,
+                "data": base64.b64encode(data).decode("ascii"),
+                "missed": cursor < buffer_start_cursor
+            }
+
+    # Still no data (timeout with no new output)
+    return {
+        "cursor": buffer_end_cursor,
+        "data": "",
+        "missed": False
+    }
+
+
+@app.post("/terminal/{session_id}/input")
+async def terminal_input(request: Request, session_id: str):
+    """
+    Send input to terminal.
+
+    Body: Raw bytes/text to send to the terminal.
+    """
+    # Authentication
+    if auth_manager:
+        token = request.cookies.get("vibe_session")
+        if not token or not auth_manager.validate_session(token):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Ownership check
+    verify_session_ownership(request, session_id)
+
+    http_session = _http_terminal_sessions.get(session_id)
+    if not http_session or not http_session.ttyd_ws:
+        raise HTTPException(status_code=404, detail="Terminal not connected")
+
+    if not http_session.connected:
+        raise HTTPException(status_code=410, detail="Terminal disconnected")
+
+    data = await request.body()
+    if not data:
+        return {"status": "ok"}
+
+    # Send to ttyd: '0' + input bytes (ttyd INPUT command)
+    try:
+        message = b"0" + data
+        await http_session.ttyd_ws.send(message)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Failed to send input for {session_id[:12]}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send input")
+
+
+@app.post("/terminal/{session_id}/resize")
+async def terminal_resize(
+    request: Request,
+    session_id: str,
+    cols: int,
+    rows: int
+):
+    """
+    Resize terminal.
+
+    Query params:
+    - cols: Number of columns
+    - rows: Number of rows
+    """
+    # Authentication
+    if auth_manager:
+        token = request.cookies.get("vibe_session")
+        if not token or not auth_manager.validate_session(token):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Ownership check
+    verify_session_ownership(request, session_id)
+
+    http_session = _http_terminal_sessions.get(session_id)
+    if not http_session or not http_session.ttyd_ws:
+        raise HTTPException(status_code=404, detail="Terminal not connected")
+
+    if not http_session.connected:
+        raise HTTPException(status_code=410, detail="Terminal disconnected")
+
+    # Send resize: '1' + JSON (ttyd RESIZE_TERMINAL command)
+    try:
+        resize_msg = json.dumps({"columns": cols, "rows": rows})
+        message = b"1" + resize_msg.encode("utf-8")
+        await http_session.ttyd_ws.send(message)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Failed to resize terminal for {session_id[:12]}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to resize terminal")
+
+
+@app.post("/terminal/{session_id}/disconnect")
+async def terminal_disconnect(request: Request, session_id: str):
+    """
+    Disconnect HTTP terminal session.
+
+    Closes the WebSocket connection to ttyd and cleans up resources.
+    """
+    # Authentication
+    if auth_manager:
+        token = request.cookies.get("vibe_session")
+        if not token or not auth_manager.validate_session(token):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Ownership check (but don't fail if session doesn't exist)
+    try:
+        verify_session_ownership(request, session_id)
+    except HTTPException:
+        pass  # Allow disconnect even if ownership check fails (cleanup)
+
+    await _cleanup_http_terminal(session_id)
+    logger.info(f"HTTP terminal disconnected for session {session_id[:12]}")
+    return {"status": "disconnected"}
 
 
 if __name__ == "__main__":

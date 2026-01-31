@@ -4,6 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Terminal - {{ session_id[:8] }}</title>
+    <!-- xterm.js (vendored from @xterm/xterm@5.5.0) -->
+    <link rel="stylesheet" href="/static/xterm/xterm.min.css">
+    <script src="/static/xterm/xterm.min.js"></script>
+    <script src="/static/xterm/addon-fit.min.js"></script>
+    <script src="/static/xterm/addon-web-links.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -95,12 +100,60 @@
         .terminal-container {
             flex: 1;
             position: relative;
+            overflow: hidden;
         }
 
-        .terminal-iframe {
+        #terminal-display {
             width: 100%;
             height: 100%;
-            border: none;
+        }
+
+        /* xterm.js overrides for consistent styling */
+        .xterm {
+            padding: 4px;
+        }
+
+        .xterm-viewport::-webkit-scrollbar {
+            width: 10px;
+        }
+
+        .xterm-viewport::-webkit-scrollbar-track {
+            background: #1a1a1a;
+        }
+
+        .xterm-viewport::-webkit-scrollbar-thumb {
+            background: #444;
+            border-radius: 5px;
+        }
+
+        .xterm-viewport::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        /* Terminal overlay for status messages */
+        .terminal-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(240, 240, 240, 0.95);
+            color: #101010;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 16px;
+            z-index: 100;
+            display: none;
+            text-align: center;
+            max-width: 80%;
+        }
+
+        .terminal-overlay.show {
+            display: block;
+        }
+
+        .terminal-overlay.error {
+            background: rgba(248, 113, 113, 0.95);
+            color: white;
         }
 
         .loading-overlay {
@@ -624,12 +677,8 @@
             <div class="spinner"></div>
             <p>Connecting to terminal...</p>
         </div>
-        <iframe
-            id="terminalFrame"
-            class="terminal-iframe"
-            src="/ttyd/{{ session_id }}/"
-            onload="hideLoading()"
-        ></iframe>
+        <div id="terminal-display"></div>
+        <div class="terminal-overlay" id="terminalOverlay"></div>
     </div>
 
     <!-- Upload Modal -->
@@ -710,6 +759,258 @@
         let uploadQueue = [];
         let uploadStats = { completed: 0, total: 0, bytes: 0, startTime: 0 };
         let cachedMaxSessions = 3;
+
+        // =================================================================
+        // Terminal Configuration and State
+        // =================================================================
+        const termConfig = {
+            fontSize: 14,
+            fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, 'Liberation Mono', Menlo, Courier, monospace",
+            fontWeight: '400',
+            fontWeightBold: '600',
+            cursorStyle: 'bar',
+            cursorBlink: true,
+            scrollback: 10000,
+            allowProposedApi: true,
+            theme: {
+                foreground: '#d2d2d2',
+                background: '#1a1a1a',
+                cursor: '#adadad',
+                cursorAccent: '#1a1a1a',
+                selectionBackground: 'rgba(255, 255, 255, 0.3)',
+                black: '#000000',
+                red: '#d81e00',
+                green: '#5ea702',
+                yellow: '#cfae00',
+                blue: '#427ab3',
+                magenta: '#89658e',
+                cyan: '#00a7aa',
+                white: '#dbded8',
+                brightBlack: '#686a66',
+                brightRed: '#f54235',
+                brightGreen: '#99e343',
+                brightYellow: '#fdeb61',
+                brightBlue: '#84b0d8',
+                brightMagenta: '#bc94b7',
+                brightCyan: '#37e6e8',
+                brightWhite: '#f1f1f0',
+            }
+        };
+
+        let term = null;
+        let fitAddon = null;
+        let cursor = 0;
+        let connected = false;
+        let pollController = null;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+
+        // =================================================================
+        // Terminal Initialization
+        // =================================================================
+        function initTerminal() {
+            const container = document.getElementById('terminal-display');
+
+            term = new Terminal(termConfig);
+            fitAddon = new FitAddon.FitAddon();
+            const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+
+            term.loadAddon(fitAddon);
+            term.loadAddon(webLinksAddon);
+
+            term.open(container);
+            fitAddon.fit();
+
+            // Handle user input
+            term.onData(data => {
+                sendInput(data);
+            });
+
+            // Handle binary input (paste with special chars)
+            term.onBinary(data => {
+                const bytes = new Uint8Array(data.length);
+                for (let i = 0; i < data.length; i++) {
+                    bytes[i] = data.charCodeAt(i);
+                }
+                sendInput(bytes);
+            });
+
+            // Handle resize
+            let resizeTimeout = null;
+            const handleResize = () => {
+                fitAddon.fit();
+                clearTimeout(resizeTimeout);
+                resizeTimeout = setTimeout(() => {
+                    if (connected) {
+                        sendResize(term.cols, term.rows);
+                    }
+                }, 100);
+            };
+
+            window.addEventListener('resize', handleResize);
+            new ResizeObserver(handleResize).observe(container);
+
+            // Start connection
+            connect();
+        }
+
+        // =================================================================
+        // HTTP Terminal Connection
+        // =================================================================
+        async function connect() {
+            showOverlay('Connecting...', false);
+
+            try {
+                const resp = await fetch(`/terminal/${sessionId}/connect`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: `cols=${term.cols}&rows=${term.rows}`
+                });
+
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({ detail: 'Connection failed' }));
+                    throw new Error(data.detail || `HTTP ${resp.status}`);
+                }
+
+                connected = true;
+                reconnectAttempts = 0;
+                hideLoading();
+                hideOverlay();
+                term.focus();
+                poll();
+
+            } catch (e) {
+                console.error('Connection error:', e);
+                showOverlay(`Connection failed: ${e.message}`, true);
+
+                // Auto-retry with backoff
+                reconnectAttempts++;
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
+                    setTimeout(connect, delay);
+                } else {
+                    showOverlay('Connection failed. Click to retry.', true);
+                }
+            }
+        }
+
+        // =================================================================
+        // Long-Polling for Output
+        // =================================================================
+        async function poll() {
+            if (!connected) return;
+
+            pollController = new AbortController();
+
+            try {
+                const resp = await fetch(
+                    `/terminal/${sessionId}/poll?cursor=${cursor}&timeout=30`,
+                    { signal: pollController.signal }
+                );
+
+                if (!resp.ok) {
+                    if (resp.status === 410) {
+                        // Terminal disconnected
+                        connected = false;
+                        showOverlay('Terminal disconnected. Click to reconnect.', true);
+                        return;
+                    }
+                    if (resp.status === 401) {
+                        // Session expired
+                        window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+                        return;
+                    }
+                    throw new Error(`Poll failed: HTTP ${resp.status}`);
+                }
+
+                const result = await resp.json();
+
+                if (result.data) {
+                    // Decode base64 and write to terminal
+                    const bytes = Uint8Array.from(atob(result.data), c => c.charCodeAt(0));
+                    term.write(bytes);
+                }
+
+                if (result.missed) {
+                    console.warn('Missed some terminal output (buffer overflow)');
+                }
+
+                cursor = result.cursor;
+
+                // Continue polling
+                poll();
+
+            } catch (e) {
+                if (e.name === 'AbortError') {
+                    return; // Intentional abort
+                }
+
+                console.error('Poll error:', e);
+
+                // Retry after delay if still connected
+                if (connected) {
+                    setTimeout(poll, 1000);
+                }
+            }
+        }
+
+        // =================================================================
+        // Send Input to Terminal
+        // =================================================================
+        async function sendInput(data) {
+            if (!connected) return;
+
+            try {
+                const body = typeof data === 'string'
+                    ? new TextEncoder().encode(data)
+                    : data;
+
+                await fetch(`/terminal/${sessionId}/input`, {
+                    method: 'POST',
+                    body: body
+                });
+            } catch (e) {
+                console.error('Input error:', e);
+            }
+        }
+
+        // =================================================================
+        // Send Resize to Terminal
+        // =================================================================
+        async function sendResize(cols, rows) {
+            if (!connected) return;
+
+            try {
+                await fetch(`/terminal/${sessionId}/resize?cols=${cols}&rows=${rows}`, {
+                    method: 'POST'
+                });
+            } catch (e) {
+                console.error('Resize error:', e);
+            }
+        }
+
+        // =================================================================
+        // Overlay Helpers
+        // =================================================================
+        function showOverlay(message, isError = false) {
+            const overlay = document.getElementById('terminalOverlay');
+            overlay.textContent = message;
+            overlay.className = 'terminal-overlay show' + (isError ? ' error' : '');
+        }
+
+        function hideOverlay() {
+            const overlay = document.getElementById('terminalOverlay');
+            overlay.className = 'terminal-overlay';
+        }
+
+        // Click on overlay to reconnect
+        document.getElementById('terminalOverlay').addEventListener('click', () => {
+            if (!connected) {
+                reconnectAttempts = 0;
+                cursor = 0;
+                connect();
+            }
+        });
 
         function hideLoading() {
             document.getElementById('loadingOverlay').classList.add('hidden');
@@ -1171,13 +1472,17 @@
             });
         }
 
-        // Remove iframe before navigating to prevent ttyd's beforeunload popup
+        // Disconnect terminal before navigating
         function navigateAway(url) {
-            const frame = document.getElementById('terminalFrame');
-            if (frame) {
-                frame.src = 'about:blank';
-                frame.remove();
+            connected = false;
+            if (pollController) {
+                pollController.abort();
             }
+            // Fire-and-forget disconnect
+            fetch(`/terminal/${sessionId}/disconnect`, {
+                method: 'POST',
+                keepalive: true
+            }).catch(() => {});
             window.location.href = url;
         }
 
@@ -1197,6 +1502,26 @@
                 }
             });
         });
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            connected = false;
+            if (pollController) {
+                pollController.abort();
+            }
+            // Fire-and-forget disconnect (keepalive ensures it sends)
+            fetch(`/terminal/${sessionId}/disconnect`, {
+                method: 'POST',
+                keepalive: true
+            }).catch(() => {});
+        });
+
+        // Initialize terminal when DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initTerminal);
+        } else {
+            initTerminal();
+        }
 
     </script>
 </body>
