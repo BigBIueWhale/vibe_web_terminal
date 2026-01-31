@@ -474,6 +474,11 @@ RUN apt-get update && apt-get install -y \
     fonts-noto \
     fonts-noto-color-emoji \
     fonts-noto-mono \
+    fonts-noto-extra \
+    fonts-noto-cjk \
+    fonts-noto-cjk-extra \
+    fonts-noto-ui-core \
+    fonts-noto-ui-extra \
     fonts-freefont-ttf \
     fonts-opensymbol \
     fonts-open-sans \
@@ -490,7 +495,6 @@ RUN apt-get update && apt-get install -y \
     fonts-indic \
     fonts-thai-tlwg \
     fontconfig \
-    fonts-noto-extra \
     fonts-symbola \
     fonts-powerline \
     fonts-font-awesome \
@@ -503,6 +507,47 @@ RUN apt-get update && apt-get install -y \
     fonts-emojione \
     fonts-ancient-scripts \
     fonts-wine \
+    fonts-ibm-plex \
+    fonts-cantarell \
+    fonts-crosextra-carlito \
+    fonts-crosextra-caladea \
+    fonts-nanum \
+    fonts-nanum-coding \
+    fonts-nanum-eco \
+    fonts-nanum-extra \
+    fonts-urw-base35 \
+    fonts-sil-gentium-basic \
+    fonts-sil-charis \
+    fonts-wqy-microhei \
+    fonts-wqy-zenhei \
+    fonts-arphic-ukai \
+    fonts-arphic-uming \
+    fonts-ipafont-gothic \
+    fonts-ipafont-mincho \
+    fonts-vlgothic \
+    fonts-takao-gothic \
+    fonts-unfonts-core \
+    fonts-unfonts-extra \
+    fonts-sil-padauk \
+    fonts-sil-abyssinica \
+    fonts-lklug-sinhala \
+    fonts-tibetan-machine \
+    fonts-guru \
+    fonts-guru-extra \
+    fonts-lohit-guru \
+    fonts-tlwg-garuda \
+    fonts-tlwg-kinnari \
+    fonts-tlwg-laksaman \
+    fonts-tlwg-loma \
+    fonts-tlwg-mono \
+    fonts-tlwg-norasi \
+    fonts-tlwg-purisa \
+    fonts-tlwg-sawasdee \
+    fonts-tlwg-typewriter \
+    fonts-tlwg-typist \
+    fonts-tlwg-typo \
+    fonts-tlwg-umpush \
+    fonts-tlwg-waree \
     xfonts-utils \
     && rm -rf /var/lib/apt/lists/* && fc-cache -fv
 

@@ -19,3 +19,5 @@ You can accomplish far more than basic code editing:
 - **Interact with cloud services**: Azure CLI, GitHub CLI (gh), rclone for cloud storage.
 
 When asked to do something, think creatively about which installed tools can solve it. Chain them together. Write scripts. The environment is a sandbox—experiment freely.
+
+**Fonts**: The system has extensive font coverage including emojis, Hebrew (Culmus), Arabic, CJK (Chinese/Japanese/Korean), Indic scripts, Thai, and popular web fonts. Use `fc-list` to discover available fonts.
