@@ -1,9 +1,20 @@
-# Vibe CLI configuration for Docker container
+# Vibe CLI v2.0.2 configuration for Docker container
 # Based on battle-tested config from mistral_vibe_setup
 #
 # IMPORTANT: Ollama Load Balancer must listen on 172.17.0.1:11434 (docker0)
 # so that containers can reach it. Modify main.rs to bind to 172.17.0.1:11434
 # instead of 127.0.0.1:11434.
+
+# =============================================================================
+# Core Settings
+# =============================================================================
+
+active_model = "devstral-local"
+textual_theme = "atom-one-dark"
+
+# Disable auto-update (we're running a patched version from source)
+enable_auto_update = false
+enable_update_checks = false
 
 # Trigger Vibe's automatic summarization ("compaction") before we hit the real limit.
 # We set it below 104k to leave headroom for:
@@ -11,9 +22,48 @@
 # - the model's in-progress output tokens
 auto_compact_threshold = 95000
 
-active_model = "devstral-local"
+# API timeout in seconds - Ollama can be slow on first inference or long contexts
+# Set high to prevent timeouts during model loading or large context processing
+api_timeout = 900.0
 
-textual_theme = "atom-one-dark"
+# =============================================================================
+# Agent Configuration (v2.0.0+)
+# =============================================================================
+# Available agents: default, plan, accept-edits, auto-approve, explore
+# - default: Requires approval for tool executions
+# - plan: Read-only agent for exploration and planning
+# - accept-edits: Auto-approves file edits only
+# - auto-approve: Auto-approves all tool executions (YOLO mode)
+# - explore: Read-only subagent for codebase exploration (used by task tool)
+
+# Disable auto-approve agent to prevent accidental YOLO mode in container
+disabled_agents = ["auto-approve"]
+
+# =============================================================================
+# Tool Configuration
+# =============================================================================
+
+# --- Subagent / Task Tool ---
+# The "task" tool spawns subagents (e.g., "explore") for autonomous research.
+# PROBLEM: Subagents create separate conversations, which can evict the main
+# agent's KV cache. At 60k+ tokens, this causes 20-30 second delays when the
+# main agent resumes (full cache rebuild).
+#
+# To ENABLE subagents (if you have OLLAMA_NUM_PARALLEL=2+ or accept the cost):
+#   disabled_tools = []
+#
+# To DISABLE subagents (recommended for single-slot KV cache):
+disabled_tools = ["task"]
+
+[tools.bash]
+# Generous timeout for complex operations (5 minutes)
+default_timeout = 300
+# Capture more output for debugging
+max_output_bytes = 32000
+
+# =============================================================================
+# Provider Configuration
+# =============================================================================
 
 [[providers]]
 name = "ollama-docker0"
@@ -23,6 +73,10 @@ api_base = "http://172.17.0.1:11434/v1"
 api_key_env_var = "OLLAMA_API_KEY"
 api_style = "openai"
 backend = "generic"
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
 
 [[models]]
 name = "devstral-vibe"

@@ -1,0 +1,5 @@
+# Pre-configured trusted folders for Vibe v2.x
+# AGENTS.md in trusted folders are auto-loaded into system prompt
+
+trusted = ["/home/vibe/workspace"]
+untrusted = []

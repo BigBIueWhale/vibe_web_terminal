@@ -1606,8 +1606,13 @@ WORKDIR /home/vibe
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/home/vibe/.local/bin:$PATH"
 
-# Install Vibe CLI - pinned to tested version (v1.3.5 identical to v1.3.4)
-RUN /home/vibe/.local/bin/uv tool install mistral-vibe==1.3.5
+# Install Vibe CLI v2.0.2 from source with streaming disabled
+# Streaming breaks tool calls with Ollama/vLLM backends (GitHub issue #252)
+# Patch: cli.py line 174: enable_streaming=True -> enable_streaming=False
+RUN git clone --branch v2.0.2 --depth 1 https://github.com/mistralai/vibe.git /tmp/vibe \
+    && sed -i 's/enable_streaming=True/enable_streaming=False/' /tmp/vibe/vibe/cli/cli.py \
+    && /home/vibe/.local/bin/uv tool install /tmp/vibe \
+    && rm -rf /tmp/vibe
 
 # Create vibe config directory
 RUN mkdir -p /home/vibe/.vibe
@@ -1615,6 +1620,8 @@ RUN mkdir -p /home/vibe/.vibe
 # Copy vibe configuration (will be added at build time)
 COPY --chown=vibe:vibe config/vibe-config.toml /home/vibe/.vibe/config.toml
 COPY --chown=vibe:vibe config/vibe-env /home/vibe/.vibe/.env
+# Pre-trust workspace folder so AGENTS.md is auto-loaded
+COPY --chown=vibe:vibe config/vibe-trusted-folders.toml /home/vibe/.vibe/trusted_folders.toml
 
 # Copy session startup script (for persistent tmux sessions)
 COPY --chown=vibe:vibe config/start-session.sh /home/vibe/.local/bin/start-session.sh
@@ -1625,6 +1632,9 @@ COPY --chown=vibe:vibe config/tmux.conf /home/vibe/.tmux.conf
 
 # Create workspace directory for user files
 RUN mkdir -p /home/vibe/workspace
+
+# Copy AGENTS.md to workspace (auto-loaded by Vibe v2.x when folder is trusted)
+COPY --chown=vibe:vibe config/AGENTS.md /home/vibe/workspace/AGENTS.md
 
 # Create a nice bashrc
 RUN echo 'export PS1="\[\033[1;32m\]\u@vibe-terminal\[\033[0m\]:\[\033[1;34m\]\w\[\033[0m\]\$ "' >> /home/vibe/.bashrc \
