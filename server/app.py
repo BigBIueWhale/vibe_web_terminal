@@ -74,6 +74,54 @@ def is_container_not_found(e: Exception) -> bool:
     return isinstance(e, aiodocker.exceptions.DockerError) and e.status == 404
 
 
+async def delete_workspace(workspace: Path, session_id_prefix: str = "") -> bool:
+    """Delete a workspace directory, using Docker as root if normal deletion fails.
+
+    Returns True if deleted, False if deletion failed entirely.
+    """
+    if not workspace.exists():
+        return True
+
+    import shutil
+    label = session_id_prefix or workspace.name[:12]
+
+    # Try normal deletion first (works when UIDs match)
+    try:
+        shutil.rmtree(workspace)
+        return True
+    except PermissionError:
+        logger.warning(f"Permission denied deleting {label}, trying Docker as root...")
+    except OSError as e:
+        logger.warning(f"OS error deleting {label}: {e}, trying Docker as root...")
+
+    # Fallback: use Docker as root (handles UID mismatch or malicious permission changes)
+    try:
+        cleanup_container = await docker_client.containers.run(
+            config={
+                "Image": DOCKER_IMAGE,
+                "User": "root",
+                "Entrypoint": ["/bin/sh"],
+                "Cmd": ["-c", "rm -rf /target/* /target/.[!.]* /target/..?* 2>/dev/null; true"],
+                "HostConfig": {
+                    "Binds": [f"{workspace}:/target:rw"],
+                },
+            },
+            name=f"cleanup-{label}",
+        )
+        await cleanup_container.wait()
+        await cleanup_container.delete()
+    except aiodocker.exceptions.DockerError as e:
+        logger.error(f"Docker cleanup failed for {label}: {e}")
+        return False
+
+    # Remove the now-empty directory
+    try:
+        workspace.rmdir()
+        return True
+    except OSError:
+        return not workspace.exists()
+
+
 # =============================================================================
 # SESSION STATE MACHINE
 # =============================================================================
@@ -223,13 +271,10 @@ class SessionManager:
         container_name = get_container_name(session.session_id)
         session.container_name = container_name
 
-        # Create workspace directory
-        # Use 755 for directories (owner rwx, group/other rx)
-        # The container's vibe user (uid 1000) needs to be able to write
+        # Create workspace directory owned by uid 1000 (matches both host user and container vibe user)
         workspace_dir = WORKSPACE_BASE / session.session_id
         workspace_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(workspace_dir, 0o755)
-        # Change ownership to uid 1000 (vibe user in container)
         os.chown(workspace_dir, 1000, 1000)
         session.workspace = str(workspace_dir)
 
@@ -322,9 +367,8 @@ class SessionManager:
         # Clean up workspace
         if session.workspace:
             workspace = Path(session.workspace)
-            if workspace.exists():
-                import shutil
-                shutil.rmtree(workspace, ignore_errors=True)
+            if not await delete_workspace(workspace, session.session_id[:12]):
+                logger.error(f"Failed to delete workspace {session.session_id[:12]}")
 
     def get_session(self, session_id: str) -> Session | None:
         """Get a session by ID without creating it."""
@@ -432,6 +476,45 @@ class SessionManager:
 
         if self._sessions:
             logger.info(f"Recovered {len(self._sessions)} session(s) from previous run")
+
+    async def cleanup_orphaned_workspaces(self) -> None:
+        """Clean up workspace directories that have no corresponding container.
+
+        This handles cases like power cuts where containers are gone but
+        workspace directories remain on disk.
+        """
+        if not WORKSPACE_BASE.exists():
+            return
+
+        # Get all session IDs that have active containers
+        active_session_ids = set(self._sessions.keys())
+
+        # Check each workspace directory
+        for workspace_dir in WORKSPACE_BASE.iterdir():
+            if not workspace_dir.is_dir():
+                continue
+
+            session_id = workspace_dir.name
+
+            # Skip if this workspace has an active session
+            if session_id in active_session_ids:
+                continue
+
+            # Check if there's a container for this workspace (might not be in our session list yet)
+            container_name = get_container_name(session_id)
+            try:
+                await docker_client.containers.get(container_name)
+                # Container exists, skip this workspace
+                continue
+            except aiodocker.exceptions.DockerError:
+                pass  # Container doesn't exist, safe to clean up
+
+            # Clean up orphaned workspace
+            logger.info(f"Cleaning up orphaned workspace {session_id[:12]}")
+            if await delete_workspace(workspace_dir, session_id[:12]):
+                logger.info(f"Removed orphaned workspace {session_id[:12]}")
+            else:
+                logger.error(f"Failed to delete orphaned workspace {session_id[:12]}")
 
     def list_sessions(self) -> list[Session]:
         """Get all sessions."""
@@ -601,6 +684,7 @@ async def lifespan(app: FastAPI):
     owner_store = SessionOwnerStore(OWNER_STORE_PATH)
     docker_client = aiodocker.Docker()
     await session_manager.recover_existing_sessions()
+    await session_manager.cleanup_orphaned_workspaces()
     cleanup_task = asyncio.create_task(cleanup_old_sessions())
     auth_cleanup_task = asyncio.create_task(cleanup_expired_auth_sessions())
     logger.info("Vibe Web Terminal server started")
@@ -944,8 +1028,7 @@ async def upload_file(
     try:
         # Create parent directories if needed (for folder uploads)
         filepath.parent.mkdir(parents=True, exist_ok=True)
-        # Set proper permissions on parent directories (755 for dirs)
-        # and change ownership to container user (uid 1000)
+        # Set proper permissions on parent directories
         for parent in filepath.parents:
             if parent.is_relative_to(workspace):
                 os.chmod(parent, 0o755)
@@ -958,8 +1041,7 @@ async def upload_file(
                 await f.write(chunk)
                 total_size += len(chunk)
 
-        # Set proper permissions (644 for files, container user owns them)
-        # Scripts will need chmod +x inside container if needed
+        # Set proper permissions (644 for files)
         os.chmod(filepath, 0o644)
         os.chown(filepath, 1000, 1000)
 

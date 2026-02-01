@@ -106,6 +106,44 @@ done
 # Setup Checks
 # =============================================================================
 
+EXPECTED_UID=1000
+CURRENT_UID=$(id -u)
+
+if [ "$CURRENT_UID" != "$EXPECTED_UID" ]; then
+    cat <<EOF
+======================================================================
+  ERROR: UID Mismatch - Cannot Start
+======================================================================
+
+  Your UID:      $CURRENT_UID
+  Expected UID:  $EXPECTED_UID
+
+  WHY THIS MATTERS:
+
+  The Docker container runs as a user with UID 1000. When it creates
+  files in the workspace, those files are owned by UID 1000. Docker
+  bind mounts don't translate UIDs - they use raw numbers.
+
+  If your host UID doesn't match:
+    - File uploads from the web interface will fail
+    - You cannot directly manage files the container creates
+
+  Note: Workspace cleanup uses Docker as root as a fallback, so
+  session deletion will still work even with UID mismatch.
+
+  SOLUTIONS:
+
+    1. Run as a user with UID 1000 (check with: id -u)
+
+    2. Rebuild the container to match your UID:
+       Edit docker/Dockerfile, change "-u 1000" to "-u $CURRENT_UID"
+       Then run: docker build -t vibe-terminal:latest docker/
+
+======================================================================
+EOF
+    exit 1
+fi
+
 if [ ! -d "venv" ]; then
     echo "Setup not complete. Running setup first..."
     ./setup.sh
