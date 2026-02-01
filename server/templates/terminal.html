@@ -111,9 +111,10 @@
             bottom: 0;
         }
 
-        /* xterm.js overrides for consistent styling */
-        .xterm {
-            padding: 4px;
+        /* xterm.js overrides - match ttyd's approach */
+        .terminal {
+            padding: 0;
+            height: 100%;
         }
 
         .xterm-viewport::-webkit-scrollbar {
@@ -768,7 +769,7 @@
         // =================================================================
         const termConfig = {
             fontSize: 14,
-            fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, 'Liberation Mono', Menlo, Courier, monospace",
+            fontFamily: "Consolas, 'Liberation Mono', Menlo, Courier, monospace",
             fontWeight: '400',
             fontWeightBold: '600',
             cursorStyle: 'bar',

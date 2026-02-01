@@ -517,6 +517,7 @@ class HTTPTerminalSession:
     - A WebSocket connection to ttyd (localhost, always works)
     - An output buffer with cursor tracking for resumable polling
     - A list of waiting poll requests (for efficient long-polling)
+    - Last activity timestamp for stale connection detection
     """
     session_id: str
     ttyd_ws: Optional[websockets.WebSocketClientProtocol] = None
@@ -528,6 +529,21 @@ class HTTPTerminalSession:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     reader_task: Optional[asyncio.Task] = None
     username: str = ""  # Owner of this connection
+    last_activity: datetime = field(default_factory=datetime.now)  # For stale detection
+
+    def is_ws_alive(self) -> bool:
+        """Check if the WebSocket connection is still alive."""
+        if not self.ttyd_ws:
+            return False
+        # Check WebSocket state - works with websockets 16.x
+        try:
+            from websockets import State
+            return self.ttyd_ws.state == State.OPEN
+        except (ImportError, AttributeError):
+            # Fallback for older websockets versions
+            if hasattr(self.ttyd_ws, 'open'):
+                return self.ttyd_ws.open
+            return self.connected
 
 
 # Per-session HTTP terminal connections (session_id -> HTTPTerminalSession)
@@ -732,6 +748,43 @@ async def cleanup_expired_auth_sessions():
         await asyncio.sleep(AUTH_SESSION_CLEANUP_INTERVAL_SECONDS)
 
 
+# Stale HTTP terminal session timeout (no activity for this long = cleanup)
+HTTP_TERMINAL_STALE_TIMEOUT_SECONDS = 300  # 5 minutes
+
+
+async def cleanup_stale_http_terminals():
+    """Periodically clean up stale HTTP terminal sessions.
+
+    HTTP terminal sessions can become stale when:
+    - Client navigates away without calling disconnect
+    - Client's tab is closed without beforeunload firing
+    - Network disconnection prevents cleanup call
+    - WebSocket to ttyd dies but client never polls again
+    """
+    while True:
+        try:
+            now = datetime.now()
+            stale_sessions = []
+
+            # Find stale sessions
+            for session_id, http_session in list(_http_terminal_sessions.items()):
+                age = (now - http_session.last_activity).total_seconds()
+
+                # Check for stale (no activity) or dead (WebSocket closed)
+                if age > HTTP_TERMINAL_STALE_TIMEOUT_SECONDS or not http_session.connected:
+                    stale_sessions.append(session_id)
+
+            # Clean up stale sessions
+            for session_id in stale_sessions:
+                await _cleanup_http_terminal(session_id)
+                logger.info(f"Cleaned up stale HTTP terminal for session {session_id[:12]}")
+
+        except Exception as e:
+            logger.error(f"HTTP terminal cleanup error: {e}")
+
+        await asyncio.sleep(60)  # Check every minute
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
@@ -744,6 +797,7 @@ async def lifespan(app: FastAPI):
     await session_manager.recover_existing_sessions()
     cleanup_task = asyncio.create_task(cleanup_old_sessions())
     auth_cleanup_task = asyncio.create_task(cleanup_expired_auth_sessions())
+    http_terminal_cleanup_task = asyncio.create_task(cleanup_stale_http_terminals())
     logger.info("Vibe Web Terminal server started")
 
     yield
@@ -751,6 +805,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     cleanup_task.cancel()
     auth_cleanup_task.cancel()
+    http_terminal_cleanup_task.cancel()
     try:
         await cleanup_task
     except asyncio.CancelledError:
@@ -759,6 +814,15 @@ async def lifespan(app: FastAPI):
         await auth_cleanup_task
     except asyncio.CancelledError:
         pass
+    try:
+        await http_terminal_cleanup_task
+    except asyncio.CancelledError:
+        pass
+
+    # Clean up all HTTP terminal sessions on shutdown
+    for session_id in list(_http_terminal_sessions.keys()):
+        await _cleanup_http_terminal(session_id)
+
     if docker_client is not None:
         await docker_client.close()
     if _http_client is not None:
@@ -1449,6 +1513,11 @@ async def terminal_http_connect(
 
     Creates a WebSocket connection to ttyd (localhost) and starts buffering output.
     The client then uses /poll, /input, and /resize endpoints.
+
+    This endpoint handles reconnection gracefully:
+    - If an existing session is healthy, just updates terminal size
+    - If an existing session is dead/stale, cleans it up and creates new one
+    - Creates new session if none exists
     """
     # Authentication
     username = get_current_user(request)
@@ -1467,23 +1536,44 @@ async def terminal_http_connect(
     if session.port is None:
         raise HTTPException(status_code=503, detail="Session not ready")
 
-    # Check if already connected
+    # Check existing connection state
     async with _http_terminal_lock:
         existing = _http_terminal_sessions.get(session_id)
-        if existing and existing.connected:
-            # Already connected - just return success
-            # Update terminal size if different
-            if existing.ttyd_ws:
-                try:
-                    resize_msg = json.dumps({"columns": cols, "rows": rows})
-                    await existing.ttyd_ws.send(b"1" + resize_msg.encode("utf-8"))
-                except Exception:
-                    pass
-            return {"status": "connected", "session_id": session_id}
 
-        # Clean up old disconnected session if any
         if existing:
-            await _cleanup_http_terminal(session_id)
+            # Check if the existing connection is truly alive
+            if existing.connected and existing.is_ws_alive():
+                # Connection is healthy - just update terminal size and return
+                existing.last_activity = datetime.now()
+                if existing.ttyd_ws:
+                    try:
+                        resize_msg = json.dumps({"columns": cols, "rows": rows})
+                        await existing.ttyd_ws.send(b"1" + resize_msg.encode("utf-8"))
+                    except Exception as e:
+                        # WebSocket send failed - connection is actually dead
+                        logger.warning(f"Existing WS send failed for {session_id[:12]}: {e}")
+                        existing.connected = False
+                    else:
+                        return {"status": "connected", "session_id": session_id}
+
+            # Existing session is dead/disconnected - remove from dict (cleanup below)
+            _http_terminal_sessions.pop(session_id, None)
+
+    # Clean up old session resources (outside the lock to avoid deadlock)
+    if existing:
+        existing.connected = False
+        if existing.reader_task:
+            existing.reader_task.cancel()
+            try:
+                await existing.reader_task
+            except asyncio.CancelledError:
+                pass
+        if existing.ttyd_ws:
+            try:
+                await existing.ttyd_ws.close()
+            except Exception:
+                pass
+        logger.info(f"Cleaned up stale HTTP terminal for {session_id[:12]}")
 
     # Connect to ttyd
     try:
@@ -1534,8 +1624,14 @@ async def terminal_poll(
             detail="Terminal not connected. Call /connect first."
         )
 
-    if not http_session.connected:
+    # Check if connection is actually alive (not just the connected flag)
+    if not http_session.connected or not http_session.is_ws_alive():
+        # Mark as disconnected if WebSocket died
+        http_session.connected = False
         raise HTTPException(status_code=410, detail="Terminal disconnected")
+
+    # Update activity timestamp
+    http_session.last_activity = datetime.now()
 
     # Clamp timeout
     timeout = max(1.0, min(timeout, 60.0))
@@ -1569,6 +1665,10 @@ async def terminal_poll(
     finally:
         if waiter in http_session.waiters:
             http_session.waiters.remove(waiter)
+
+    # Check connection health after waiting (may have died during wait)
+    if not http_session.connected:
+        raise HTTPException(status_code=410, detail="Terminal disconnected")
 
     # Check again after waiting
     async with http_session.lock:
@@ -1613,8 +1713,13 @@ async def terminal_input(request: Request, session_id: str):
     if not http_session or not http_session.ttyd_ws:
         raise HTTPException(status_code=404, detail="Terminal not connected")
 
-    if not http_session.connected:
+    # Check if connection is actually alive
+    if not http_session.connected or not http_session.is_ws_alive():
+        http_session.connected = False
         raise HTTPException(status_code=410, detail="Terminal disconnected")
+
+    # Update activity
+    http_session.last_activity = datetime.now()
 
     data = await request.body()
     if not data:
@@ -1626,8 +1731,10 @@ async def terminal_input(request: Request, session_id: str):
         await http_session.ttyd_ws.send(message)
         return {"status": "ok"}
     except Exception as e:
+        # WebSocket send failed - mark as disconnected
+        http_session.connected = False
         logger.error(f"Failed to send input for {session_id[:12]}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to send input")
+        raise HTTPException(status_code=410, detail="Terminal disconnected")
 
 
 @app.post("/terminal/{session_id}/resize")
@@ -1657,8 +1764,13 @@ async def terminal_resize(
     if not http_session or not http_session.ttyd_ws:
         raise HTTPException(status_code=404, detail="Terminal not connected")
 
-    if not http_session.connected:
+    # Check if connection is actually alive
+    if not http_session.connected or not http_session.is_ws_alive():
+        http_session.connected = False
         raise HTTPException(status_code=410, detail="Terminal disconnected")
+
+    # Update activity
+    http_session.last_activity = datetime.now()
 
     # Send resize: '1' + JSON (ttyd RESIZE_TERMINAL command)
     try:
@@ -1667,8 +1779,10 @@ async def terminal_resize(
         await http_session.ttyd_ws.send(message)
         return {"status": "ok"}
     except Exception as e:
+        # WebSocket send failed - mark as disconnected
+        http_session.connected = False
         logger.error(f"Failed to resize terminal for {session_id[:12]}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to resize terminal")
+        raise HTTPException(status_code=410, detail="Terminal disconnected")
 
 
 @app.post("/terminal/{session_id}/disconnect")
