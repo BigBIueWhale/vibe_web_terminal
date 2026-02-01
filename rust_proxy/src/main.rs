@@ -8,7 +8,7 @@
 
 use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,11 +30,15 @@ use rustls::pki_types::CertificateDer;
 use tokio::signal;
 use tokio_tungstenite::tungstenite::{
     self,
+    client::IntoClientRequest,
     protocol::CloseFrame as TungsteniteCloseFrame,
     Message as TungsteniteMessage,
 };
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{debug, error, info, warn, Level};
+
+// x509-parser for checking certificate expiry (careful: its prelude re-exports `time` module)
+use x509_parser::pem::Pem;
 
 // ============================================================================
 // Configuration
@@ -47,7 +51,13 @@ const DEFAULT_HTTP_PORT: u16 = 8080;
 const MAX_BODY_SIZE: usize = 500 * 1024 * 1024; // 500MB
 const RENEWAL_CHECK_INTERVAL_HOURS: u64 = 12;
 
-/// Headers to strip when proxying (hop-by-hop headers)
+// Auto-cert configuration
+const AUTO_CERT_VALIDITY_DAYS: u32 = 3650; // 10 years
+const AUTO_CERT_CHECK_INTERVAL_SECS: u64 = 60; // Check every minute
+const DEFAULT_CERT_PATH: &str = "certs/self-signed/fullchain.pem";
+const DEFAULT_KEY_PATH: &str = "certs/self-signed/privkey.pem";
+
+/// Headers to strip when proxying (hop-by-hop headers per RFC 7230)
 const HOP_BY_HOP_HEADERS: &[&str] = &[
     "connection",
     "keep-alive",
@@ -58,6 +68,28 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
     "proxy-authorization",
     "proxy-authenticate",
     "proxy-connection",
+];
+
+/// WebSocket headers to forward to upstream.
+///
+/// We use an allowlist (not denylist) because forwarding unknown headers can
+/// cause subtle protocol errors. For example:
+///
+/// - sec-websocket-extensions: If forwarded, upstream may enable permessage-deflate
+///   compression, but tungstenite doesn't decompress by default, causing
+///   "Reserved bits are non-zero" errors when RSV1 is set on compressed frames.
+///
+/// - sec-websocket-key/version: Handled by tungstenite internally; forwarding
+///   these would conflict with the library's handshake.
+///
+/// Headers we DO forward:
+/// - sec-websocket-protocol: Required for subprotocol negotiation (e.g., ttyd's "tty")
+/// - origin, cookie, authorization: Auth and CORS
+const WEBSOCKET_FORWARD_HEADERS: &[&str] = &[
+    "sec-websocket-protocol",
+    "origin",
+    "cookie",
+    "authorization",
 ];
 
 /// Security headers added to all responses
@@ -83,6 +115,156 @@ fn security_headers() -> [(HeaderName, HeaderValue); 4] {
 }
 
 // ============================================================================
+// Auto-Certificate Management
+// ============================================================================
+
+/// Generate a self-signed certificate and save to the specified paths.
+/// Returns Ok(()) on success.
+fn generate_self_signed_cert(cert_path: &Path, key_path: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use rcgen::{CertificateParams, DnType, KeyPair, PKCS_ECDSA_P256_SHA256};
+
+    info!("Generating self-signed certificate...");
+
+    // Create directory if it doesn't exist
+    if let Some(parent) = cert_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if let Some(parent) = key_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // Get hostname for CN, fallback to "localhost"
+    let hostname = hostname::get()
+        .ok()
+        .and_then(|h| h.into_string().ok())
+        .unwrap_or_else(|| "localhost".to_string());
+
+    // Configure certificate
+    let mut params = CertificateParams::default();
+    params.distinguished_name.push(DnType::CommonName, &hostname);
+    params.subject_alt_names = vec![
+        rcgen::SanType::DnsName(hostname.clone().try_into()?),
+        rcgen::SanType::DnsName("localhost".to_string().try_into()?),
+        rcgen::SanType::IpAddress(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))),
+    ];
+
+    // Set validity period using the time crate (required by rcgen)
+    let now = time::OffsetDateTime::now_utc();
+    params.not_before = now;
+    params.not_after = now + time::Duration::days(AUTO_CERT_VALIDITY_DAYS as i64);
+
+    // Generate key pair and certificate
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    let cert = params.self_signed(&key_pair)?;
+
+    // Write certificate and key to files
+    std::fs::write(cert_path, cert.pem())?;
+    std::fs::write(key_path, key_pair.serialize_pem())?;
+
+    // Set restrictive permissions on key file (Unix only)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    info!(
+        cn = %hostname,
+        cert = %cert_path.display(),
+        key = %key_path.display(),
+        valid_days = AUTO_CERT_VALIDITY_DAYS,
+        "Self-signed certificate generated"
+    );
+
+    Ok(())
+}
+
+/// Check if a certificate file exists and is not expired.
+/// Returns Some(Duration until expiry) if valid, None if missing or expired.
+fn check_cert_expiry(cert_path: &Path) -> Option<Duration> {
+    let cert_data = std::fs::read(cert_path).ok()?;
+
+    // Parse PEM and extract X.509 certificate
+    let pem = Pem::iter_from_buffer(&cert_data).next()?.ok()?;
+    let x509 = pem.parse_x509().ok()?;
+
+    // time_to_expiration() returns time::Duration, convert to std::time::Duration
+    let time_duration = x509.validity().time_to_expiration()?;
+
+    // Convert time::Duration to std::time::Duration
+    // time::Duration can be negative, but time_to_expiration only returns positive values
+    let whole_seconds = time_duration.whole_seconds();
+    if whole_seconds < 0 {
+        return None;
+    }
+    let nanos = time_duration.subsec_nanoseconds();
+
+    Some(Duration::new(whole_seconds as u64, nanos as u32))
+}
+
+/// Format a Duration as human-readable string
+fn format_duration(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    let days = secs / 86400;
+    let hours = (secs % 86400) / 3600;
+    let mins = (secs % 3600) / 60;
+
+    if days > 0 {
+        format!("{}d {}h", days, hours)
+    } else if hours > 0 {
+        format!("{}h {}m", hours, mins)
+    } else {
+        format!("{}m", mins)
+    }
+}
+
+/// Background task that monitors certificate expiry and hot-reloads when needed.
+async fn auto_cert_renewal_task(
+    cert_path: PathBuf,
+    key_path: PathBuf,
+    tls_config: axum_server::tls_rustls::RustlsConfig,
+) {
+    let check_interval = Duration::from_secs(AUTO_CERT_CHECK_INTERVAL_SECS);
+    let one_day = Duration::from_secs(86400);
+
+    loop {
+        tokio::time::sleep(check_interval).await;
+
+        match check_cert_expiry(&cert_path) {
+            Some(time_remaining) => {
+                // Certificate still valid
+                if time_remaining < one_day {
+                    // Less than 24 hours - warn
+                    warn!(
+                        expires_in = %format_duration(time_remaining),
+                        "Certificate expiring soon"
+                    );
+                }
+            }
+            None => {
+                // Certificate expired or missing - regenerate and hot-reload
+                warn!("Certificate expired or missing - regenerating...");
+
+                if let Err(e) = generate_self_signed_cert(&cert_path, &key_path) {
+                    error!(error = %e, "Failed to regenerate certificate");
+                    continue;
+                }
+
+                // Hot-reload the new certificate
+                match tls_config.reload_from_pem_file(&cert_path, &key_path).await {
+                    Ok(()) => {
+                        info!("Certificate hot-reloaded successfully (zero downtime)");
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Failed to hot-reload certificate");
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
 // CLI Arguments
 // ============================================================================
 
@@ -93,10 +275,18 @@ fn security_headers() -> [(HeaderName, HeaderValue); 4] {
     long_about = "A high-performance reverse proxy that handles TLS termination, \
                   WebSocket proxying, and security headers for the Vibe Web Terminal.",
     after_help = r#"EXAMPLES:
-    # Manual / self-signed certificates (port 8443):
+    # Auto-generate self-signed certificate (recommended for most users):
+    rust_proxy --auto-cert
+
+    # Auto-cert with custom paths:
+    rust_proxy --auto-cert \
+        --cert /path/to/fullchain.pem \
+        --key /path/to/privkey.pem
+
+    # Use existing certificates (no auto-generation):
     rust_proxy \
-        --cert certs/self-signed/fullchain.pem \
-        --key certs/self-signed/privkey.pem
+        --cert certs/fullchain.pem \
+        --key certs/privkey.pem
 
     # Auto-SSL with Let's Encrypt (needs root for ACME on port 80):
     sudo rust_proxy \
@@ -109,15 +299,24 @@ fn security_headers() -> [(HeaderName, HeaderValue); 4] {
 "#
 )]
 struct Args {
+    /// Auto-generate and renew self-signed SSL certificates
+    /// Certificates are regenerated the instant they expire (hot-reload, zero downtime)
+    #[arg(long)]
+    auto_cert: bool,
+
     /// Obtain and renew SSL certificates from Let's Encrypt automatically
     #[arg(long)]
     auto_ssl: bool,
 
     /// Path to SSL certificate (fullchain.pem)
+    /// With --auto-cert: where to save generated cert (default: certs/self-signed/fullchain.pem)
+    /// Without --auto-cert: path to existing cert (required)
     #[arg(long)]
     cert: Option<PathBuf>,
 
     /// Path to SSL private key (privkey.pem)
+    /// With --auto-cert: where to save generated key (default: certs/self-signed/privkey.pem)
+    /// Without --auto-cert: path to existing key (required)
     #[arg(long)]
     key: Option<PathBuf>,
 
@@ -140,6 +339,10 @@ struct Args {
     /// Upstream server port
     #[arg(long, default_value_t = DEFAULT_UPSTREAM_PORT)]
     upstream_port: u16,
+
+    /// Upstream server host
+    #[arg(long, default_value = DEFAULT_UPSTREAM_HOST)]
+    upstream_host: String,
 }
 
 // ============================================================================
@@ -153,16 +356,17 @@ struct AppState {
 }
 
 impl AppState {
-    fn new(upstream_port: u16) -> Self {
+    fn new(upstream_host: &str, upstream_port: u16) -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(300))
             .connect_timeout(Duration::from_secs(10))
             .pool_max_idle_per_host(100)
+            .redirect(reqwest::redirect::Policy::none())  // Don't follow redirects - pass them through
             .build()
             .expect("Failed to create HTTP client");
 
         Self {
-            upstream_url: format!("http://{}:{}", DEFAULT_UPSTREAM_HOST, upstream_port),
+            upstream_url: format!("http://{}:{}", upstream_host, upstream_port),
             http_client,
         }
     }
@@ -381,10 +585,11 @@ async fn http_proxy(state: AppState, req: Request, client_addr: SocketAddr) -> R
     }
 
     // Copy upstream response headers (except hop-by-hop)
+    // Use append() not insert() to preserve multiple Set-Cookie headers
     for (key, value) in upstream_response.headers() {
         let key_lower = key.as_str().to_lowercase();
         if !HOP_BY_HOP_HEADERS.contains(&key_lower.as_str()) && key_lower != "content-length" {
-            response_headers.insert(key.clone(), value.clone());
+            response_headers.append(key.clone(), value.clone());
         }
     }
 
@@ -419,11 +624,9 @@ async fn websocket_proxy(
         "Opening WebSocket proxy connection"
     );
 
-    // Build upstream request with auth headers
-    let mut request = match tungstenite::http::Request::builder()
-        .uri(&ws_url)
-        .body(())
-    {
+    // Build upstream WebSocket request using IntoClientRequest trait
+    // This automatically adds required WebSocket headers (Sec-WebSocket-Key, etc.)
+    let mut request = match ws_url.clone().into_client_request() {
         Ok(req) => req,
         Err(e) => {
             error!(error = %e, "Failed to build WebSocket request");
@@ -431,12 +634,14 @@ async fn websocket_proxy(
         }
     };
 
-    // Forward Cookie and Authorization headers
-    for key in ["cookie", "authorization"] {
-        if let Some(value) = headers.get(key) {
-            if let Ok(header_name) = tungstenite::http::HeaderName::try_from(key) {
-                if let Ok(header_value) = tungstenite::http::HeaderValue::from_bytes(value.as_bytes()) {
-                    request.headers_mut().insert(header_name, header_value);
+    // Forward only specific headers needed for WebSocket proxying (allowlist)
+    // This is more conservative than a denylist - avoids forwarding headers
+    // that might confuse the upstream (user-agent, accept-encoding, etc.)
+    for header_name in WEBSOCKET_FORWARD_HEADERS {
+        if let Some(value) = headers.get(*header_name) {
+            if let Ok(tung_name) = tungstenite::http::HeaderName::try_from(*header_name) {
+                if let Ok(tung_value) = tungstenite::http::HeaderValue::from_bytes(value.as_bytes()) {
+                    request.headers_mut().insert(tung_name, tung_value);
                 }
             }
         }
@@ -444,7 +649,14 @@ async fn websocket_proxy(
 
     // Connect to upstream WebSocket
     let upstream_socket = match tokio_tungstenite::connect_async(request).await {
-        Ok((socket, _)) => socket,
+        Ok((socket, response)) => {
+            debug!(
+                upstream = %ws_url,
+                status = %response.status(),
+                "WebSocket upstream connected"
+            );
+            socket
+        }
         Err(e) => {
             error!(
                 upstream = %ws_url,
@@ -464,17 +676,20 @@ async fn websocket_proxy(
         while let Some(result) = client_stream.next().await {
             match result {
                 Ok(msg) => {
+                    debug!(client = %client_addr, msg_type = ?msg, "Client -> Upstream");
                     let tungstenite_msg = axum_to_tungstenite(msg);
-                    if upstream_sink.send(tungstenite_msg).await.is_err() {
+                    if let Err(e) = upstream_sink.send(tungstenite_msg).await {
+                        warn!(error = %e, "Failed to send to upstream");
                         break;
                     }
                 }
                 Err(e) => {
-                    debug!(error = %e, "Client WebSocket error");
+                    warn!(error = %e, client = %client_addr, "Client WebSocket error");
                     break;
                 }
             }
         }
+        debug!(client = %client_addr, "Client stream ended, closing upstream");
         let _ = upstream_sink.close().await;
     };
 
@@ -482,18 +697,21 @@ async fn websocket_proxy(
         while let Some(result) = upstream_stream.next().await {
             match result {
                 Ok(msg) => {
+                    debug!(client = %client_addr, msg_type = ?msg, "Upstream -> Client");
                     if let Some(axum_msg) = tungstenite_to_axum(msg) {
-                        if client_sink.send(axum_msg).await.is_err() {
+                        if let Err(e) = client_sink.send(axum_msg).await {
+                            warn!(error = %e, "Failed to send to client");
                             break;
                         }
                     }
                 }
                 Err(e) => {
-                    debug!(error = %e, "Upstream WebSocket error");
+                    warn!(error = %e, client = %client_addr, "Upstream WebSocket error");
                     break;
                 }
             }
         }
+        debug!(client = %client_addr, "Upstream stream ended, closing client");
         let _ = client_sink.close().await;
     };
 
@@ -756,8 +974,8 @@ async fn http_redirect_handler(
 // Server Runners
 // ============================================================================
 
-fn create_proxy_router(upstream_port: u16) -> Router {
-    let state = AppState::new(upstream_port);
+fn create_proxy_router(upstream_host: &str, upstream_port: u16) -> Router {
+    let state = AppState::new(upstream_host, upstream_port);
 
     Router::new()
         .route("/{*path}", any(proxy_handler))
@@ -795,21 +1013,88 @@ async fn shutdown_signal(handle: Handle) {
     handle.graceful_shutdown(Some(Duration::from_secs(10)));
 }
 
+/// Run with auto-generated self-signed certificates (with hot-reload on expiry)
+async fn run_auto_cert(
+    cert_path: PathBuf,
+    key_path: PathBuf,
+    port: u16,
+    upstream_host: &str,
+    upstream_port: u16,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    info!("Vibe Reverse Proxy starting");
+    info!("Mode: auto-cert (self-signed with hot-reload)");
+    info!("Upstream: http://{}:{}", upstream_host, upstream_port);
+    info!("Listening: https://0.0.0.0:{}", port);
+    info!("Certificate: {}", cert_path.display());
+
+    // Generate certificate if missing or expired
+    match check_cert_expiry(&cert_path) {
+        Some(time_remaining) => {
+            info!(
+                expires_in = %format_duration(time_remaining),
+                "Using existing certificate"
+            );
+        }
+        None => {
+            info!("Certificate missing or expired - generating new one...");
+            generate_self_signed_cert(&cert_path, &key_path)?;
+        }
+    }
+
+    // Use RustlsConfig which supports hot-reload
+    let rustls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path)
+        .await
+        .map_err(|e| format!("Failed to load TLS config: {}", e))?;
+
+    let app = create_proxy_router(upstream_host, upstream_port);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+
+    // Create handle for graceful shutdown
+    let handle = Handle::new();
+    tokio::spawn(shutdown_signal(handle.clone()));
+
+    // Spawn the auto-renewal background task
+    let renewal_handle = tokio::spawn(auto_cert_renewal_task(
+        cert_path.clone(),
+        key_path.clone(),
+        rustls_config.clone(),
+    ));
+
+    info!("Ready to accept connections");
+    info!("Auto-renewal task running (checks every {}s)", AUTO_CERT_CHECK_INTERVAL_SECS);
+
+    let result = axum_server::bind_rustls(addr, rustls_config)
+        .handle(handle)
+        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+        .await;
+
+    renewal_handle.abort();
+
+    if let Err(e) = result {
+        error!("HTTPS server error: {}", e);
+        return Err(e.into());
+    }
+
+    info!("Reverse proxy stopped");
+    Ok(())
+}
+
 /// Run with manually provided SSL certificates
 async fn run_manual_ssl(
     cert_path: PathBuf,
     key_path: PathBuf,
     port: u16,
+    upstream_host: &str,
     upstream_port: u16,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Vibe Reverse Proxy starting");
     info!("Mode: manual-ssl");
-    info!("Upstream: http://{}:{}", DEFAULT_UPSTREAM_HOST, upstream_port);
+    info!("Upstream: http://{}:{}", upstream_host, upstream_port);
     info!("Listening: https://0.0.0.0:{}", port);
     info!("Certificate: {}", cert_path.display());
 
     let tls_config = load_rustls_config(&cert_path, &key_path)?;
-    let app = create_proxy_router(upstream_port);
+    let app = create_proxy_router(upstream_host, upstream_port);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls_config));
@@ -834,12 +1119,13 @@ async fn run_auto_ssl(
     domain: String,
     email: String,
     port: u16,
+    upstream_host: &str,
     upstream_port: u16,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Vibe Reverse Proxy starting");
     info!("Mode: auto-ssl (Let's Encrypt via certbot)");
     info!("Domain: {}", domain);
-    info!("Upstream: http://{}:{}", DEFAULT_UPSTREAM_HOST, upstream_port);
+    info!("Upstream: http://{}:{}", upstream_host, upstream_port);
     info!("Listening: https://0.0.0.0:{}", port);
 
     let base_dir = std::env::current_exe()
@@ -885,7 +1171,7 @@ async fn run_auto_ssl(
     }
 
     let tls_config = load_rustls_config(&cert_manager.cert_path, &cert_manager.key_path)?;
-    let app = create_proxy_router(upstream_port);
+    let app = create_proxy_router(upstream_host, upstream_port);
 
     let https_addr = SocketAddr::from(([0, 0, 0, 0], port));
     let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls_config));
@@ -932,14 +1218,14 @@ async fn run_auto_ssl(
 }
 
 /// Run without SSL (development mode)
-async fn run_no_ssl(port: u16, upstream_port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn run_no_ssl(port: u16, upstream_host: &str, upstream_port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Vibe Reverse Proxy starting");
     info!("Mode: no-ssl (development)");
-    info!("Upstream: http://{}:{}", DEFAULT_UPSTREAM_HOST, upstream_port);
+    info!("Upstream: http://{}:{}", upstream_host, upstream_port);
     info!("Listening: http://0.0.0.0:{}", port);
     warn!("Running without SSL - for development only!");
 
-    let app = create_proxy_router(upstream_port);
+    let app = create_proxy_router(upstream_host, upstream_port);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -983,7 +1269,12 @@ async fn main() {
 
     let args = Args::parse();
 
-    let result = if args.auto_ssl {
+    let result = if args.auto_cert {
+        // Auto-generate and manage self-signed certificates
+        let cert_path = args.cert.unwrap_or_else(|| PathBuf::from(DEFAULT_CERT_PATH));
+        let key_path = args.key.unwrap_or_else(|| PathBuf::from(DEFAULT_KEY_PATH));
+        run_auto_cert(cert_path, key_path, args.port, &args.upstream_host, args.upstream_port).await
+    } else if args.auto_ssl {
         let domain = args.domain.unwrap_or_else(|| {
             eprintln!("Error: --domain is required with --auto-ssl");
             std::process::exit(1);
@@ -992,22 +1283,23 @@ async fn main() {
             eprintln!("Error: --email is required with --auto-ssl");
             std::process::exit(1);
         });
-        run_auto_ssl(domain, email, args.port, args.upstream_port).await
+        run_auto_ssl(domain, email, args.port, &args.upstream_host, args.upstream_port).await
     } else if let (Some(cert), Some(key)) = (args.cert, args.key) {
-        run_manual_ssl(cert, key, args.port, args.upstream_port).await
+        run_manual_ssl(cert, key, args.port, &args.upstream_host, args.upstream_port).await
     } else if args.no_ssl {
         let port = if args.port == DEFAULT_HTTPS_PORT {
             DEFAULT_HTTP_PORT
         } else {
             args.port
         };
-        run_no_ssl(port, args.upstream_port).await
+        run_no_ssl(port, &args.upstream_host, args.upstream_port).await
     } else {
         eprintln!(
             "Error: Choose an SSL mode:\n\
-             \n  --auto-ssl --domain DOMAIN --email EMAIL\n\
-             \n  --cert FILE --key FILE\n\
-             \n  --no-ssl"
+             \n  --auto-cert                              (self-signed, auto-renew)\n\
+             \n  --auto-ssl --domain DOMAIN --email EMAIL (Let's Encrypt)\n\
+             \n  --cert FILE --key FILE                   (existing certificates)\n\
+             \n  --no-ssl                                 (development only)"
         );
         std::process::exit(1);
     };

@@ -1,10 +1,111 @@
 #!/bin/bash
 # Vibe Web Terminal - Run Script
 
+set -e
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Check if setup has been run
+# =============================================================================
+# Default Configuration
+# =============================================================================
+
+CERT="$SCRIPT_DIR/certs/self-signed/fullchain.pem"
+KEY="$SCRIPT_DIR/certs/self-signed/privkey.pem"
+PORT=8443
+UPSTREAM_HOST=127.0.0.1
+UPSTREAM_PORT=8081
+NO_SSL=false
+AUTO_CERT=true  # Pass --auto-cert to rust_proxy by default
+
+# =============================================================================
+# Usage
+# =============================================================================
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Vibe Web Terminal - Start the server and SSL reverse proxy
+
+Options:
+  --cert PATH           Path to SSL certificate (default: certs/self-signed/fullchain.pem)
+  --key PATH            Path to SSL private key (default: certs/self-signed/privkey.pem)
+  --port PORT           HTTPS port (default: 8443, or 8080 with --no-ssl)
+  --upstream-host HOST  Backend server host (default: 127.0.0.1)
+  --upstream-port PORT  Backend server port (default: 8081)
+  --no-ssl              Run without SSL (development only)
+  --no-auto-cert        Use existing certificates instead of auto-generating
+                        Required when using externally signed certificates
+  -h, --help            Show this help message
+
+Examples:
+  # Default (auto-generates and hot-reloads self-signed certs)
+  ./run.sh
+
+  # Use externally signed certificates (no auto-generation)
+  ./run.sh --cert /etc/ssl/my-domain/fullchain.pem \\
+           --key /etc/ssl/my-domain/privkey.pem \\
+           --no-auto-cert
+
+  # Development mode (no SSL)
+  ./run.sh --no-ssl
+
+  # Custom ports
+  ./run.sh --port 443 --upstream-port 8080
+EOF
+    exit 0
+}
+
+# =============================================================================
+# Argument Parsing
+# =============================================================================
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --cert)
+            CERT="$2"
+            shift 2
+            ;;
+        --key)
+            KEY="$2"
+            shift 2
+            ;;
+        --port)
+            PORT="$2"
+            shift 2
+            ;;
+        --upstream-host)
+            UPSTREAM_HOST="$2"
+            shift 2
+            ;;
+        --upstream-port)
+            UPSTREAM_PORT="$2"
+            shift 2
+            ;;
+        --no-ssl)
+            NO_SSL=true
+            shift
+            ;;
+        --no-auto-cert)
+            AUTO_CERT=false
+            shift
+            ;;
+        -h|--help)
+            usage
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# =============================================================================
+# Setup Checks
+# =============================================================================
+
 if [ ! -d "venv" ]; then
     echo "Setup not complete. Running setup first..."
     ./setup.sh
@@ -26,26 +127,10 @@ run_python() {
     fi
 }
 
-# Ensure valid SSL certificates exist (auto-generate or renew)
-CERT="$SCRIPT_DIR/certs/self-signed/fullchain.pem"
-KEY="$SCRIPT_DIR/certs/self-signed/privkey.pem"
-generate_cert() {
-    mkdir -p "$SCRIPT_DIR/certs/self-signed"
-    CN=$(curl -4 -s --connect-timeout 3 ifconfig.me 2>/dev/null || echo "localhost")
-    openssl req -x509 -newkey rsa:4096 \
-        -keyout "$KEY" -out "$CERT" \
-        -days 3650 -nodes -subj "/CN=$CN" 2>/dev/null
-    echo "  SSL certificate generated (CN=$CN, valid 10 years)"
-}
-if [ ! -f "$CERT" ] || [ ! -f "$KEY" ]; then
-    echo "  No SSL certificates found, generating..."
-    generate_cert
-elif ! openssl x509 -checkend 0 -noout -in "$CERT" 2>/dev/null; then
-    echo "  SSL certificate expired, regenerating..."
-    generate_cert
-fi
+# =============================================================================
+# Build Rust Proxy (if needed)
+# =============================================================================
 
-# Check if Rust proxy binary exists
 RUST_PROXY="$SCRIPT_DIR/rust_proxy/target/release/rust_proxy"
 if [ ! -f "$RUST_PROXY" ]; then
     echo "Building Rust proxy..."
@@ -53,12 +138,40 @@ if [ ! -f "$RUST_PROXY" ]; then
     cd "$SCRIPT_DIR"
 fi
 
-# Start server in background
+# =============================================================================
+# Start Services
+# =============================================================================
+
+# Start backend server
 run_python "$SCRIPT_DIR/server/app.py" &
 SERVER_PID=$!
 
 # Start reverse proxy
-"$RUST_PROXY" --cert "$CERT" --key "$KEY" &
+if [ "$NO_SSL" = true ]; then
+    # Use port 8080 for no-ssl unless explicitly set
+    if [ "$PORT" = "8443" ]; then
+        PORT=8080
+    fi
+    "$RUST_PROXY" --no-ssl --port "$PORT" --upstream-host "$UPSTREAM_HOST" --upstream-port "$UPSTREAM_PORT" &
+elif [ "$AUTO_CERT" = true ]; then
+    # Auto-generate and hot-reload certificates (default)
+    "$RUST_PROXY" --auto-cert --cert "$CERT" --key "$KEY" --port "$PORT" --upstream-host "$UPSTREAM_HOST" --upstream-port "$UPSTREAM_PORT" &
+else
+    # Use existing certificates (--no-auto-cert specified)
+    if [ ! -f "$CERT" ]; then
+        echo "Error: Certificate not found: $CERT"
+        echo "Provide a valid certificate or remove --no-auto-cert to auto-generate"
+        kill $SERVER_PID 2>/dev/null
+        exit 1
+    fi
+    if [ ! -f "$KEY" ]; then
+        echo "Error: Private key not found: $KEY"
+        echo "Provide a valid key or remove --no-auto-cert to auto-generate"
+        kill $SERVER_PID 2>/dev/null
+        exit 1
+    fi
+    "$RUST_PROXY" --cert "$CERT" --key "$KEY" --port "$PORT" --upstream-host "$UPSTREAM_HOST" --upstream-port "$UPSTREAM_PORT" &
+fi
 PROXY_PID=$!
 
 # Ctrl+C stops everything
@@ -78,8 +191,12 @@ echo "============================================"
 echo "  Vibe Web Terminal"
 echo "============================================"
 echo ""
-echo "  Server:  http://127.0.0.1:8081"
-echo "  Proxy:   https://0.0.0.0:8443"
+echo "  Server:  http://$UPSTREAM_HOST:$UPSTREAM_PORT"
+if [ "$NO_SSL" = true ]; then
+    echo "  Proxy:   http://0.0.0.0:$PORT"
+else
+    echo "  Proxy:   https://0.0.0.0:$PORT"
+fi
 echo ""
 echo "  Press Ctrl+C to stop"
 echo ""
