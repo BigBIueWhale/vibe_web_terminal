@@ -14,8 +14,8 @@ if [ -n "$pids" ]; then
     stopped=$((stopped + 1))
 fi
 
-# Kill reverse proxy
-pids=$(pgrep -f "python.*reverse_proxy\.py" 2>/dev/null)
+# Kill reverse proxy (Rust binary)
+pids=$(pgrep -f "rust_proxy.*--cert" 2>/dev/null)
 if [ -n "$pids" ]; then
     echo "Stopping reverse proxy (PID: $pids)..."
     kill $pids 2>/dev/null
@@ -27,7 +27,7 @@ if [ $stopped -eq 0 ]; then
 else
     # Wait briefly and verify
     sleep 1
-    remaining=$(pgrep -f "python.*(server/app|reverse_proxy)\.py" 2>/dev/null)
+    remaining=$(pgrep -f "(python.*server/app\.py|rust_proxy.*--cert)" 2>/dev/null)
     if [ -n "$remaining" ]; then
         echo "Processes didn't stop gracefully, sending SIGKILL..."
         kill -9 $remaining 2>/dev/null

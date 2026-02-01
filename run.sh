@@ -45,14 +45,20 @@ elif ! openssl x509 -checkend 0 -noout -in "$CERT" 2>/dev/null; then
     generate_cert
 fi
 
+# Check if Rust proxy binary exists
+RUST_PROXY="$SCRIPT_DIR/rust_proxy/target/release/rust_proxy"
+if [ ! -f "$RUST_PROXY" ]; then
+    echo "Building Rust proxy..."
+    cd "$SCRIPT_DIR/rust_proxy" && cargo build --release
+    cd "$SCRIPT_DIR"
+fi
+
 # Start server in background
 run_python "$SCRIPT_DIR/server/app.py" &
 SERVER_PID=$!
 
 # Start reverse proxy
-PROXY_PID=""
-"$PYTHON" "$SCRIPT_DIR/reverse_proxy.py" \
-    --cert "$CERT" --key "$KEY" &
+"$RUST_PROXY" --cert "$CERT" --key "$KEY" &
 PROXY_PID=$!
 
 # Ctrl+C stops everything
@@ -60,7 +66,7 @@ cleanup() {
     echo ""
     echo "Stopping..."
     kill $SERVER_PID 2>/dev/null
-    [ -n "$PROXY_PID" ] && kill $PROXY_PID 2>/dev/null
+    kill $PROXY_PID 2>/dev/null
     wait 2>/dev/null
     echo "Stopped."
     exit 0

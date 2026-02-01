@@ -105,10 +105,26 @@ source venv/bin/activate
 log_info "Installing Python dependencies..."
 pip install --quiet --upgrade pip
 pip install --quiet -r server/requirements.txt
-pip install --quiet -r proxy_requirements.txt
 log_info "Dependencies installed."
 
-# Step 4: Build Docker image (or skip if already exists)
+# Step 4: Build Rust reverse proxy
+log_info "Building Rust reverse proxy..."
+if command -v cargo &> /dev/null; then
+    RUST_PROXY="$SCRIPT_DIR/rust_proxy/target/release/rust_proxy"
+    if [ "$FORCE_BUILD" = true ] || [ ! -f "$RUST_PROXY" ]; then
+        cd "$SCRIPT_DIR/rust_proxy"
+        cargo build --release
+        cd "$SCRIPT_DIR"
+        log_info "Rust proxy built successfully."
+    else
+        log_info "Rust proxy already built, skipping. (Run with --force-build to rebuild)"
+    fi
+else
+    log_warn "Rust/Cargo not installed. Proxy will be built on first run."
+    log_warn "Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+fi
+
+# Step 5: Build Docker image (or skip if already exists)
 if [ "$FORCE_BUILD" = true ]; then
     log_info "Force building Docker image..."
     cd docker
@@ -126,13 +142,13 @@ else
     log_info "Docker image built successfully."
 fi
 
-# Step 5: Create workspace directory
+# Step 6: Create workspace directory
 log_info "Creating workspace directory..."
 mkdir -p /tmp/vibe-workspaces
 chmod 777 /tmp/vibe-workspaces
 log_info "Workspace directory created at /tmp/vibe-workspaces"
 
-# Step 6: Test Ollama connectivity
+# Step 7: Test Ollama connectivity
 log_info "Testing Ollama Load Balancer connectivity..."
 if curl -s --connect-timeout 5 http://172.17.0.1:11434/v1/models > /dev/null 2>&1; then
     log_info "Ollama Load Balancer is reachable at 172.17.0.1:11434"
@@ -142,7 +158,7 @@ else
     log_warn "Vibe CLI inside containers may not work without it."
 fi
 
-# Step 7: Ensure scripts are executable
+# Step 8: Ensure scripts are executable
 chmod +x "$SCRIPT_DIR/run.sh" "$SCRIPT_DIR/stop.sh" 2>/dev/null
 
 echo ""

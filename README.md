@@ -12,7 +12,7 @@ A web-based terminal service that provides full Linux terminals with Mistral Vib
 - **Session Management** - Track, switch, and delete sessions from the browser
 - **Session Persistence** - Containers persist until PC restart (workspaces in /tmp)
 - **Authentication** - Optional username/password and LDAP login for internet-facing deployments
-- **SSL Reverse Proxy** - Built-in Python reverse proxy with self-signed certificates
+- **SSL Reverse Proxy** - High-performance Rust reverse proxy with TLS termination
 
 ## Architecture
 
@@ -26,7 +26,7 @@ Browser --> localhost:8081 --> FastAPI Server --> Docker Containers
 ### Production (internet-facing)
 
 ```
-Internet --> reverse_proxy.py :8443 (SSL) --> localhost:8081 (FastAPI)
+Internet --> rust_proxy :8443 (SSL) --> localhost:8081 (FastAPI)
                                                    |
                                                    v
                                             Docker Containers
@@ -297,8 +297,7 @@ vibe-web-terminal/
 ├── edit_user.py            # CLI tool to manage local users
 ├── auth.yaml.example       # Example auth configuration (committed)
 ├── auth.yaml               # Actual auth config (gitignored)
-├── reverse_proxy.py        # SSL reverse proxy for production
-├── proxy_requirements.txt  # Dependencies for reverse proxy
+├── rust_proxy/             # SSL reverse proxy (Rust)
 ├── docker/
 │   ├── Dockerfile          # Terminal container image
 │   └── config/
