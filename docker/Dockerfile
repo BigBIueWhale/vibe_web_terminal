@@ -880,7 +880,9 @@ ENV PATH="/root/.local/bin:$PATH"
 
 # Create user with password "password"
 # Use UID 1000 to match typical host user - enables seamless file sharing
-RUN useradd -m -s /bin/bash -G sudo -u 1000 vibe \
+# Ubuntu 24.04 has an "ubuntu" user with UID 1000, so remove it first
+RUN userdel -r ubuntu 2>/dev/null || true \
+    && useradd -m -s /bin/bash -G sudo -u 1000 vibe \
     && echo "vibe:password" | chpasswd \
     && echo "vibe ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
