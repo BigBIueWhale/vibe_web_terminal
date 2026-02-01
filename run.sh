@@ -4,6 +4,24 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Default HTTPS port (use 443 to work through strict corporate firewalls)
+HTTPS_PORT=8443
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -p|--port)
+            HTTPS_PORT="$2"
+            shift 2
+            ;;
+        *)
+            echo "Usage: $0 [-p|--port PORT]"
+            echo "  -p, --port PORT  HTTPS port (default: 8443, use 443 for firewalls)"
+            exit 1
+            ;;
+    esac
+done
+
 # Check if setup has been run
 if [ ! -d "venv" ]; then
     echo "Setup not complete. Running setup first..."
@@ -52,7 +70,7 @@ SERVER_PID=$!
 # Start reverse proxy
 PROXY_PID=""
 "$PYTHON" "$SCRIPT_DIR/reverse_proxy.py" \
-    --cert "$CERT" --key "$KEY" &
+    --cert "$CERT" --key "$KEY" --port "$HTTPS_PORT" &
 PROXY_PID=$!
 
 # Ctrl+C stops everything
@@ -73,7 +91,7 @@ echo "  Vibe Web Terminal"
 echo "============================================"
 echo ""
 echo "  Server:  http://127.0.0.1:8081"
-echo "  Proxy:   https://0.0.0.0:8443"
+echo "  Proxy:   https://0.0.0.0:$HTTPS_PORT"
 echo ""
 echo "  Press Ctrl+C to stop"
 echo ""

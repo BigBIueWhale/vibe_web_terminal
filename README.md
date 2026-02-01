@@ -81,6 +81,11 @@ cd /path/to/vibe-web-terminal
 
 `run.sh` automatically generates self-signed SSL certificates if missing or expired, starts the backend server on `http://127.0.0.1:8081`, and the SSL reverse proxy on `https://0.0.0.0:8443`. Press Ctrl+C to stop both.
 
+To use a different HTTPS port (e.g., 443 to bypass strict corporate firewalls):
+```bash
+./run.sh --port 443
+```
+
 ---
 
 ## Production Deployment (Internet-Facing)
