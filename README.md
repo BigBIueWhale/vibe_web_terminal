@@ -83,6 +83,13 @@ cd /path/to/vibe-web-terminal
 
 To use a different HTTPS port (e.g., 443 to bypass strict corporate firewalls):
 ```bash
+# Allow binding to port 443 without root (one-time)
+sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443
+
+# Make it permanent
+echo 'net.ipv4.ip_unprivileged_port_start=443' | sudo tee /etc/sysctl.d/99-unprivileged-ports.conf
+
+# Run on port 443
 ./run.sh --port 443
 ```
 
