@@ -1,7 +1,6 @@
-# Local Ollama (main agent)
-OLLAMA_API_KEY=ollama
+# Vibe Environment Configuration
+# Non-sensitive defaults only - secrets go in vibe-secrets.env
 
-# Mistral Cloud (subagents)
-# Get your API key from: https://console.mistral.ai/api-keys
-# Free tier available on Experiment plan
-MISTRAL_API_KEY=your-mistral-api-key-here
+# Local Ollama (main agent)
+# This is just a placeholder value for Ollama's OpenAI-compatible API
+OLLAMA_API_KEY=ollama

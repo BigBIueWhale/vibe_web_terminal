@@ -24,6 +24,9 @@ Thumbs.db
 /tmp/
 *.log
 
+# Vibe secrets (API keys for cloud providers)
+docker/config/vibe-secrets.env
+
 # Authentication (contains password hashes and secrets)
 auth.yaml
 

@@ -915,6 +915,12 @@ COPY --chown=vibe:vibe config/vibe-env /home/vibe/.vibe/.env
 COPY --chown=vibe:vibe config/vibe-trusted-folders.toml /home/vibe/.vibe/trusted_folders.toml
 COPY --chown=vibe:vibe config/agents /home/vibe/.vibe/agents
 
+# Copy secrets file and append to .env
+# BUILD WILL FAIL if vibe-secrets.env doesn't exist - this is intentional!
+# Copy vibe-secrets.env.example to vibe-secrets.env and fill in your API keys
+COPY --chown=vibe:vibe config/vibe-secrets.env /tmp/vibe-secrets.env
+RUN cat /tmp/vibe-secrets.env >> /home/vibe/.vibe/.env && rm /tmp/vibe-secrets.env
+
 # Copy session startup script (for persistent tmux sessions)
 COPY --chown=vibe:vibe config/start-session.sh /home/vibe/.local/bin/start-session.sh
 RUN chmod +x /home/vibe/.local/bin/start-session.sh
