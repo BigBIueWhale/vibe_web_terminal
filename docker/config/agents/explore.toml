@@ -19,6 +19,9 @@ system_prompt_id = "subagent"
 # Full autonomy - no permission prompts during research
 auto_approve = true
 
+# Same compaction threshold as main agent
+auto_compact_threshold = 95000
+
 # Research tools - read-only plus bash for investigation
 # - grep: Search for patterns in files
 # - read_file: Read file contents
