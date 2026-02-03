@@ -105,12 +105,12 @@ output_price = 0.0
 # --- Subagent Model (Mistral Cloud) ---
 # Used by the custom explore agent defined in agents/explore.toml
 [[models]]
-name = "devstral-small-2501"
+name = "devstral-small-2-25-12"
 provider = "mistral-cloud"
 alias = "devstral-cloud"
 temperature = 0.2
-input_price = 0.0   # Free during Experiment plan
-output_price = 0.0
+input_price = 0.10  # $0.10 per million input tokens
+output_price = 0.30 # $0.30 per million output tokens
 
 # --- Alternative: Subagent on Local Ollama ---
 # TOGGLE: To use local Ollama for subagents instead of cloud:
