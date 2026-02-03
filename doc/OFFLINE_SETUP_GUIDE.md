@@ -122,20 +122,62 @@ File size: 1.66 GB. Format is `.tar.zst` which needs the `zstd` package to extra
 
 ---
 
-### Step 8: Download Ollama Models
+### Step 8: Download Ollama Model and Create Vibe-Optimized Variant
 
-Install Ollama temporarily on your online machine, pull models, then package them:
+Install Ollama temporarily on your online machine, pull the model, create the optimized variant, then package everything:
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
+```
 
-ollama pull devstral
-ollama pull qwen3:32b
+Pull the Devstral Small 2 model (Q4_K_M quantization for best quality/VRAM balance):
 
+```bash
+ollama pull devstral-small-2:24b-instruct-2512-q4_K_M
+```
+
+Create a Modelfile that bakes in optimal settings for Vibe CLI. Vibe uses the OpenAI-compatible API which cannot set context size, so we must embed it in the model:
+
+```bash
+mkdir -p ./downloaded/ollama-modelfile
+cat > ./downloaded/ollama-modelfile/Modelfile << 'EOF'
+FROM devstral-small-2:24b-instruct-2512-q4_K_M
+
+# Agentic coding: keep tool plans stable.
+# Mistral recommends temperature 0.2 for Vibe/Devstral.
+PARAMETER temperature 0.2
+
+# Large context for complex codebases (adjust based on your VRAM)
+# RTX 5090 with 32GB VRAM can handle 104k comfortably
+PARAMETER num_ctx 104000
+
+# Sampling floor to avoid low-probability junk tokens
+PARAMETER min_p 0.01
+
+# Infinite generation (prevents cut-off mid-refactor)
+PARAMETER num_predict -1
+EOF
+```
+
+Create the derived model:
+
+```bash
+ollama create devstral-vibe -f ./downloaded/ollama-modelfile/Modelfile
+```
+
+Verify it was created:
+
+```bash
+ollama show --modelfile devstral-vibe
+```
+
+Package the models (includes both base and derived):
+
+```bash
 tar -cvf ./downloaded/ollama-models.tar ~/.ollama/models/
 ```
 
-Each model is 15-25 GB.
+Model size: approximately 15 GB.
 
 ---
 
@@ -353,7 +395,7 @@ sudo systemctl enable ollama
 sudo systemctl start ollama
 ```
 
-Load the models:
+Load the model (includes both base model and devstral-vibe variant):
 
 ```bash
 sudo mkdir -p /usr/share/ollama/.ollama/
@@ -367,6 +409,14 @@ Test it:
 ```bash
 curl http://localhost:11434/api/tags
 ```
+
+You should see `devstral-vibe` in the list. Verify its parameters:
+
+```bash
+ollama show --modelfile devstral-vibe
+```
+
+You should see `num_ctx 104000`, `min_p 0.01`, `num_predict -1`.
 
 ---
 
@@ -426,7 +476,7 @@ Shows: Docker version number
 ```bash
 curl http://localhost:11434/api/tags
 ```
-Shows: List of Ollama models
+Shows: `devstral-vibe` in the list of models
 
 ```bash
 docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu24.04 nvidia-smi
@@ -446,5 +496,5 @@ Shows: NVIDIA GeForce RTX 5090 inside Docker container
 | Python packages | ~100 MB |
 | Rust binary | ~10 MB |
 | Docker image (vibe-terminal) | ~8 GB |
-| LLM Models | 20-50 GB |
-| **Total** | **~30-60 GB** |
+| LLM Model (devstral-vibe) | ~15 GB |
+| **Total** | **~25-30 GB** |
