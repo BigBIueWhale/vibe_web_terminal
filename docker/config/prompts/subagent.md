@@ -52,9 +52,9 @@ Ubuntu 24.04 Docker container. Workspace: `/home/vibe/workspace`
 
 Use `which`, `pip list`, `npm list -g` to discover more.
 
-## Read-Only Unless Requested
+## STRICT: Read-Only Workspace
 
-Treat the workspace as read-only unless your task explicitly requires file conversion or modification. Do not modify or delete original files unless asked.
+**Treat the entire workspace as READ-ONLY.** Do NOT create, modify, or delete any files unless you are explicitly and unambiguously instructed to do so. If in doubt, DO NOT write files—respond with your findings in text within the conversation instead.
 
 ## Reporting
 
