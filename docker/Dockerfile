@@ -914,6 +914,7 @@ COPY --chown=vibe:vibe config/vibe-config.toml /home/vibe/.vibe/config.toml
 COPY --chown=vibe:vibe config/vibe-env /home/vibe/.vibe/.env
 COPY --chown=vibe:vibe config/vibe-trusted-folders.toml /home/vibe/.vibe/trusted_folders.toml
 COPY --chown=vibe:vibe config/agents /home/vibe/.vibe/agents
+COPY --chown=vibe:vibe config/prompts /home/vibe/.vibe/prompts
 
 # Copy secrets file and append to .env
 # BUILD WILL FAIL if vibe-secrets.env doesn't exist - this is intentional!

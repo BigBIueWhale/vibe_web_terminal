@@ -1,20 +1,27 @@
-# Custom explore subagent configuration
-# Overrides the built-in "explore" agent to use Mistral Cloud for fast inference.
+# Deep Research Subagent Configuration
+# Overrides the built-in "explore" agent with full autonomy for thorough research.
 #
-# TOGGLE: To use local Ollama instead of cloud, change:
-#   active_model = "devstral-local"
-#
-# This agent is used by the "task" tool for autonomous research.
-# It has read-only access (grep, read_file) for safe codebase exploration.
+# This agent is designed for recursive, exhaustive research tasks.
+# It can spawn additional subagents to divide and conquer complex questions.
 
-display_name = "Explore (Cloud)"
-description = "Read-only subagent for codebase exploration using Mistral Cloud"
+display_name = "Research (Cloud)"
+description = "Autonomous research subagent with recursive capabilities for deep investigation"
 safety = "safe"
 agent_type = "subagent"
 
 # Use Mistral Cloud for subagent inference
-# TOGGLE: Change to "devstral-local" for local Ollama
+# TOGGLE: Change to "devstral-local" for local Ollama (when you have multiple GPUs)
 active_model = "devstral-cloud"
 
-# Restrict to read-only tools for safety
-enabled_tools = ["grep", "read_file"]
+# Use subagent-specific prompt (without the orchestration instructions)
+system_prompt_id = "subagent"
+
+# Full autonomy - no permission prompts during research
+auto_approve = true
+
+# Research tools - read-only plus bash for investigation
+# - grep: Search for patterns in files
+# - read_file: Read file contents
+# - bash: Run commands for investigation (ls, find, cat, head, etc.)
+# - todo: Track research progress and findings
+enabled_tools = ["grep", "read_file", "bash", "todo"]

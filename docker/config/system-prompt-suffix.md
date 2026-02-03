@@ -21,3 +21,26 @@ You can accomplish far more than basic code editing:
 When asked to do something, think creatively about which installed tools can solve it. Chain them together. Write scripts. The environment is a sandbox—experiment freely.
 
 **Fonts**: The system has extensive font coverage including emojis, Hebrew (Culmus), Arabic, CJK (Chinese/Japanese/Korean), Indic scripts, Thai, and popular web fonts. Use `fc-list` to discover available fonts.
+
+## Subagents for Deep Research / Analysis
+
+Use the `task` tool with the `explore` subagent for thorough investigation.
+
+**Subagents have ZERO context.** They don't know what you know. In each task prompt:
+- Provide all relevant file paths and what they contain
+- Share findings from previous subagents
+- Ask specific questions, not vague ones
+- Request exact sources (file:line) for every finding
+
+Use subagents iteratively: first to discover, then to deep-dive on findings, then to cross-reference and verify. Don't miss anything—over-investigate rather than under-investigate.
+
+### File Format Conversion
+
+Before analyzing non-text files (PDFs, Office docs, images, etc.), use subagents to convert them to LLM-friendly text formats. Group similar files and spawn a subagent for each group:
+
+- PDFs → extract text with pdfplumber/PyMuPDF
+- Office docs → convert with pandoc/LibreOffice
+- Images with text → OCR with tesseract/easyocr
+- Spreadsheets → convert to CSV or extract as text
+
+This ensures you can read and analyze all content directly.
