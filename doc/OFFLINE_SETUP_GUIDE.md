@@ -124,10 +124,15 @@ File size: 1.66 GB. Format is `.tar.zst` which needs the `zstd` package to extra
 
 ### Step 8: Download Ollama Model and Create Vibe-Optimized Variant
 
-Install Ollama temporarily on your online machine, pull the model, create the optimized variant, then package everything:
+**Note:** This step can be done on ANY machine with Ollama installed (Windows, macOS, or Linux). The model files are platform-independent. Just run `ollama pull`, then copy the `.ollama` folder from your home directory.
+
+Install Ollama on your online machine if not already installed:
 
 ```bash
+# Linux/macOS
 curl -fsSL https://ollama.com/install.sh | sh
+
+# Windows: Download installer from https://ollama.com/download
 ```
 
 Pull the Devstral Small 2 model (Q4_K_M quantization for best quality/VRAM balance):
@@ -171,10 +176,14 @@ Verify it was created:
 ollama show --modelfile devstral-vibe
 ```
 
-Package the models (includes both base and derived):
+Package the model folder (the derived model references the base, so both are included):
 
 ```bash
+# Linux/macOS
 tar -cvf ./downloaded/ollama-models.tar ~/.ollama/models/
+
+# Windows (from PowerShell, copy folder to transfer media)
+# Copy-Item -Recurse "$env:USERPROFILE\.ollama\models" .\downloaded\ollama-models
 ```
 
 Model size: approximately 15 GB.
@@ -241,7 +250,7 @@ cd ~/vibe_web_terminal
 docker save vibe-terminal:latest | gzip > ~/Debian-Package-Installer/downloaded/vibe-terminal-image.tar.gz
 ```
 
-File size: approximately 8 GB.
+File size: approximately 1 GB (compressed).
 
 ---
 
@@ -489,12 +498,12 @@ Shows: NVIDIA GeForce RTX 5090 inside Docker container
 
 | File | Size |
 |------|------|
-| Ubuntu .deb packages | ~500 MB |
-| Docker Engine .deb packages | ~150 MB |
-| NVIDIA Container Toolkit .deb packages | ~50 MB |
-| Ollama v0.15.4 | 1.7 GB |
-| Python packages | ~100 MB |
-| Rust binary | ~10 MB |
-| Docker image (vibe-terminal) | ~8 GB |
-| LLM Model (devstral-vibe) | ~15 GB |
-| **Total** | **~25-30 GB** |
+| Ubuntu .deb packages | ~200 MB |
+| Docker Engine .deb packages | ~120 MB |
+| NVIDIA Container Toolkit .deb packages | ~5 MB |
+| Ollama v0.15.4 binary | 1.7 GB |
+| Python packages | ~20 MB |
+| Rust binary (pre-built) | ~10 MB |
+| Docker image (vibe-terminal, compressed) | ~1 GB |
+| LLM Model (devstral-small-2) | ~15 GB |
+| **Total** | **~18 GB** |
