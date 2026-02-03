@@ -1,0 +1,20 @@
+# Custom explore subagent configuration
+# Overrides the built-in "explore" agent to use Mistral Cloud for fast inference.
+#
+# TOGGLE: To use local Ollama instead of cloud, change:
+#   active_model = "devstral-local"
+#
+# This agent is used by the "task" tool for autonomous research.
+# It has read-only access (grep, read_file) for safe codebase exploration.
+
+display_name = "Explore (Cloud)"
+description = "Read-only subagent for codebase exploration using Mistral Cloud"
+safety = "safe"
+agent_type = "subagent"
+
+# Use Mistral Cloud for subagent inference
+# TOGGLE: Change to "devstral-local" for local Ollama
+active_model = "devstral-cloud"
+
+# Restrict to read-only tools for safety
+enabled_tools = ["grep", "read_file"]

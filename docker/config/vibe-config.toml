@@ -43,16 +43,13 @@ api_timeout = 900.0
 # =============================================================================
 
 # --- Subagent / Task Tool ---
-# The "task" tool spawns subagents (e.g., "explore") for autonomous research.
-# PROBLEM: Subagents create separate conversations, which can evict the main
-# agent's KV cache. At 60k+ tokens, this causes 20-30 second delays when the
-# main agent resumes (full cache rebuild).
+# The "task" tool spawns subagents for autonomous research using Mistral Cloud.
+# Main agent stays on local Ollama, subagents use fast cloud inference.
+# This avoids KV cache eviction since subagents don't compete for local GPU.
 #
-# To ENABLE subagents (if you have OLLAMA_NUM_PARALLEL=2+ or accept the cost):
-#   disabled_tools = []
-#
-# To DISABLE subagents (recommended for single-slot KV cache):
-disabled_tools = ["task"]
+# TOGGLE: To DISABLE subagents entirely, uncomment this line:
+# disabled_tools = ["task"]
+disabled_tools = []
 
 [tools.bash]
 # Generous timeout for complex operations (5 minutes)
@@ -75,6 +72,7 @@ permission = "always"
 # Provider Configuration
 # =============================================================================
 
+# --- Local Ollama (for main agent) ---
 [[providers]]
 name = "ollama-docker0"
 # Point at Ollama Load Balancer on docker0 interface
@@ -84,10 +82,18 @@ api_key_env_var = "OLLAMA_API_KEY"
 api_style = "openai"
 backend = "generic"
 
+# --- Mistral Cloud (for subagents) ---
+[[providers]]
+name = "mistral-cloud"
+api_base = "https://api.mistral.ai/v1"
+api_key_env_var = "MISTRAL_API_KEY"
+backend = "mistral"
+
 # =============================================================================
 # Model Configuration
 # =============================================================================
 
+# --- Main Agent Model (Local Ollama) ---
 [[models]]
 name = "devstral-vibe"
 provider = "ollama-docker0"
@@ -95,3 +101,18 @@ alias = "devstral-local"
 temperature = 0.2
 input_price = 0.0
 output_price = 0.0
+
+# --- Subagent Model (Mistral Cloud) ---
+# Used by the custom explore agent defined in agents/explore.toml
+[[models]]
+name = "devstral-small-2501"
+provider = "mistral-cloud"
+alias = "devstral-cloud"
+temperature = 0.2
+input_price = 0.0   # Free during Experiment plan
+output_price = 0.0
+
+# --- Alternative: Subagent on Local Ollama ---
+# TOGGLE: To use local Ollama for subagents instead of cloud:
+# 1. Edit agents/explore.toml and change active_model to "devstral-local"
+# 2. Or create agents/explore.toml with active_model = "devstral-local"

@@ -913,6 +913,7 @@ RUN mkdir -p /home/vibe/.vibe
 COPY --chown=vibe:vibe config/vibe-config.toml /home/vibe/.vibe/config.toml
 COPY --chown=vibe:vibe config/vibe-env /home/vibe/.vibe/.env
 COPY --chown=vibe:vibe config/vibe-trusted-folders.toml /home/vibe/.vibe/trusted_folders.toml
+COPY --chown=vibe:vibe config/agents /home/vibe/.vibe/agents
 
 # Copy session startup script (for persistent tmux sessions)
 COPY --chown=vibe:vibe config/start-session.sh /home/vibe/.local/bin/start-session.sh
