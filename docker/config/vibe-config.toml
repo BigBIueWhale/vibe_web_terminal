@@ -104,8 +104,9 @@ output_price = 0.0
 
 # --- Subagent Model (Mistral Cloud) ---
 # Used by the custom explore agent defined in agents/explore.toml
+# Devstral Small 2 (24B) - the newer version with 256K context
 [[models]]
-name = "devstral-small-latest"
+name = "labs-devstral-small-2512"
 provider = "mistral-cloud"
 alias = "devstral-cloud"
 temperature = 0.2
