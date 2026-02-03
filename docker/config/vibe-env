@@ -1,1 +1,7 @@
+# Local Ollama (main agent)
 OLLAMA_API_KEY=ollama
+
+# Mistral Cloud (subagents)
+# Get your API key from: https://console.mistral.ai/api-keys
+# Free tier available on Experiment plan
+MISTRAL_API_KEY=your-mistral-api-key-here
