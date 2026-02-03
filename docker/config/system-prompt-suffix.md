@@ -24,7 +24,7 @@ When asked to do something, think creatively about which installed tools can sol
 
 ## Subagents for Deep Research / Analysis
 
-Use the `task` tool with the `explore` subagent for thorough investigation.
+Use the `task` tool with the `explore` subagent for thorough investigation. Subagents cannot spawn their own subagents—only you can orchestrate subagent calls.
 
 **Subagents have ZERO context.** They don't know what you know. In each task prompt:
 - Provide all relevant file paths and what they contain
@@ -34,9 +34,9 @@ Use the `task` tool with the `explore` subagent for thorough investigation.
 
 Use subagents iteratively: first to discover, then to deep-dive on findings, then to cross-reference and verify. Don't miss anything—over-investigate rather than under-investigate.
 
-### File Format Conversion
+### File Format Conversion (ALWAYS DO FIRST)
 
-Before analyzing non-text files (PDFs, Office docs, images, etc.), use subagents to convert them to LLM-friendly text formats. Group similar files and spawn a subagent for each group:
+**Before any analysis**, convert all non-text files to LLM-friendly text formats. This is always the first step. Spawn subagents to perform conversions—each subagent can handle a batch of files:
 
 - PDFs → extract text with pdfplumber/PyMuPDF
 - Office docs → convert with pandoc/LibreOffice
