@@ -63,5 +63,5 @@ PARAMETER min_p 0.01
 # Infinite generation (OpenWebUI's max_tokens = -1)
 PARAMETER num_predict -1
 
-# Force all 40 layers to GPU
-PARAMETER num_gpu 40
+# Force all 41 layers to GPU
+PARAMETER num_gpu 41
