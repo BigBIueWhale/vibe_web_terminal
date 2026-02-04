@@ -340,6 +340,34 @@ If your Ollama is at a different address, edit `docker/config/vibe-config.toml`:
 api_base = "http://YOUR_OLLAMA_IP:11434/v1"
 ```
 
+### Devstral Model Setup (Text-Only for Maximum Context)
+
+The default Ollama `devstral-small-2` model bundles a vision encoder that wastes ~10GB VRAM even when not using images. For maximum context length, use the **text-only** bartowski GGUF instead.
+
+**Pull and install the model:**
+
+```bash
+ollama pull hf.co/bartowski/mistralai_Devstral-Small-2-24B-Instruct-2512-GGUF:Q4_K_M
+ollama create devstral-vibe -f devstral-vibe/Modelfile
+```
+
+See [`devstral-vibe/Modelfile`](devstral-vibe/Modelfile) for the full configuration (104k context, tool-calling template, sampling parameters).
+
+**Why this matters:**
+
+| Version | Model Size | 40k Context VRAM | 104k Context |
+|---------|------------|------------------|--------------|
+| Ollama bundled (vision) | 15 GB | ~32 GB (19% CPU offload) | Won't fit |
+| Bartowski text-only | 14.3 GB | ~20 GB (100% GPU) | ~29 GB (100% GPU) |
+
+The bartowski version saves ~10GB VRAM by excluding the unused vision encoder, allowing 104k context to fit entirely in GPU memory on a 32GB card.
+
+**Update Vibe config** (`~/.vibe/config.toml` or `docker/config/vibe-config.toml`):
+
+```toml
+auto_compact_threshold = 95000
+```
+
 ### Container Resources
 
 In `server/app.py`, modify the container config in `_create_container`:
