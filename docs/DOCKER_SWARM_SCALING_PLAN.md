@@ -26,7 +26,7 @@ Swarm is Docker-native and sufficient for this scale.
 │                        SWARM CLUSTER                              │
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                   │
-│   MANAGER NODE (1 server, 64-128GB RAM)                          │
+│   MANAGER NODE (1 server, 64GB RAM)                              │
 │   ┌────────────────────────────────────────────────────────┐     │
 │   │  • Docker daemon + Swarm manager                       │     │
 │   │  • Traefik (ingress, SSL termination)                  │     │
@@ -38,10 +38,10 @@ Swarm is Docker-native and sufficient for this scale.
 │   │  disk. Workers keep running existing containers.       │     │
 │   └────────────────────────────────────────────────────────┘     │
 │                                                                   │
-│   WORKER NODES (5 servers, 128GB RAM each)                       │
+│   WORKER NODES (7 servers, 64GB RAM each)                        │
 │   ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐   │
 │   │  Worker 1  │ │  Worker 2  │ │  Worker 3  │ │  Worker 4  │   │
-│   │  ~160      │ │  ~160      │ │  ~160      │ │  ~160      │...│
+│   │  ~115      │ │  ~115      │ │  ~115      │ │  ~115      │...│
 │   │ containers │ │ containers │ │ containers │ │ containers │   │
 │   │            │ │            │ │            │ │            │   │
 │   │  If dies:  │ │  If dies:  │ │  If dies:  │ │  If dies:  │   │
@@ -62,7 +62,7 @@ Swarm is Docker-native and sufficient for this scale.
 ### What Each Node Is (Physically)
 
 - **Manager (1 node)**: The server you SSH into. Runs control plane + services. If it dies, restart it - Swarm state persists on disk, workers keep running.
-- **Workers (5 nodes)**: Servers that run session containers. If one dies, those sessions are gone (acceptable - data is ephemeral anyway).
+- **Workers (7 nodes)**: Servers that run session containers (~115 each). If one dies, those sessions are gone (acceptable - data is ephemeral anyway).
 - **Overlay network**: Virtual LAN spanning all nodes. Containers talk by name, Docker routes automatically.
 
 ---
@@ -72,7 +72,7 @@ Swarm is Docker-native and sufficient for this scale.
 | What dies | What happens | Recovery |
 |-----------|--------------|----------|
 | Manager node | Workers keep running. Can't create/delete sessions. | Restart manager. |
-| Worker node | ~160 sessions on that node gone. | Users create new sessions. |
+| Worker node | ~115 sessions on that node gone. | Users create new sessions. |
 | Single container | That session gone. | User creates new session. |
 | Redis | Session lookups fail. | Restart Redis. |
 | Registry | Can't hibernate or restore. | Restart registry. |
@@ -89,14 +89,14 @@ Swarm is Docker-native and sufficient for this scale.
 
 ```
 800 containers × 500MB average = 400GB RAM required
-5 workers × 128GB = 640GB RAM available
-Headroom: 240GB (37%) for bursts
+7 workers × 64GB = 448GB RAM available
+Headroom: 48GB (10%) for bursts
 ```
 
 | Resource | Requirement |
 |----------|-------------|
-| Manager node | 1x 64-128GB RAM |
-| Worker nodes | 5x 128GB RAM |
+| Manager node | 1x 64GB RAM |
+| Worker nodes | 7x 64GB RAM |
 | Network | Gigabit between nodes |
 | Registry storage | ~100GB for hibernated images |
 
@@ -104,13 +104,13 @@ Headroom: 240GB (37%) for bursts
 
 ```
 Cloud (AWS/GCP):
-  5 × 128GB workers    ≈ $2000/month
-  1 × 64GB manager     ≈ $400/month
-  Total                ≈ $2400/month
+  7 × 64GB workers     ≈ $1400/month
+  1 × 64GB manager     ≈ $200/month
+  Total                ≈ $1600/month
 
 On-prem:
-  6 servers            ≈ $15-25k one-time
-  Power/cooling        ≈ $200-400/month
+  8 servers (64GB each) ≈ $12-20k one-time
+  Power/cooling         ≈ $200-400/month
 ```
 
 ---
@@ -318,6 +318,35 @@ Traefik (on manager, SSL termination)
 
 ---
 
+## Idle Detection
+
+**How do we know a session is idle?**
+
+The terminal uses a WebSocket connection. When the user is looking at the terminal, the WebSocket is connected. When they close the tab or navigate away, the WebSocket disconnects.
+
+```python
+# Track in Redis
+async def on_websocket_connect(session_id: str):
+    await redis.hset(f"session:{session_id}", "websocket_connected", "true")
+    await redis.hset(f"session:{session_id}", "last_activity", now())
+
+async def on_websocket_disconnect(session_id: str):
+    await redis.hset(f"session:{session_id}", "websocket_connected", "false")
+    await redis.hset(f"session:{session_id}", "last_disconnect", now())
+
+# Cleanup job checks periodically
+async def check_idle_sessions():
+    for session in all_sessions:
+        if not session.websocket_connected:
+            idle_time = now() - session.last_disconnect
+            if idle_time > IDLE_TIMEOUT:
+                await hibernate_session(session.id)
+```
+
+**Idle = no WebSocket connection for IDLE_TIMEOUT duration.**
+
+---
+
 ## Configuration
 
 ```python
@@ -327,7 +356,7 @@ REGISTRY_URL = "registry:5000"
 
 # Sessions
 MAX_SESSIONS_PER_USER = 3
-IDLE_TIMEOUT_MINUTES = 120      # Hibernate after 2 hours
+IDLE_TIMEOUT_MINUTES = 120      # Hibernate after 2 hours of no WebSocket
 HIBERNATED_TTL_DAYS = 7         # Delete images after 7 days
 
 # Redis
@@ -341,10 +370,10 @@ REDIS_URL = "redis://redis:6379"
 | Aspect | Decision |
 |--------|----------|
 | Scale | 800 concurrent containers |
-| Orchestration | Docker Swarm (1 manager, 5 workers) |
+| Orchestration | Docker Swarm (1 manager, 7 workers, all 64GB) |
 | Data | Ephemeral (in-container only) |
 | Hibernation | Docker commit to private registry |
 | Session state | Redis |
 | Networking | Overlay (no port allocation) |
 | Failure model | Restart what dies. Data loss acceptable. |
-| Cost | ~$2400/month cloud |
+| Cost | ~$1600/month cloud |
