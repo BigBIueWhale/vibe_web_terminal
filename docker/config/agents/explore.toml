@@ -4,14 +4,19 @@
 # This agent is designed for recursive, exhaustive research tasks.
 # It can spawn additional subagents to divide and conquer complex questions.
 
-display_name = "Research (Cloud)"
+display_name = "Research (Local)"
 description = "Autonomous research subagent with recursive capabilities for deep investigation"
 safety = "safe"
 agent_type = "subagent"
 
-# Use Mistral Cloud for subagent inference
-# TOGGLE: Change to "devstral-local" for local Ollama (when you have multiple GPUs)
-active_model = "devstral-cloud"
+# Use local Ollama for subagent inference
+# Note: This evicts KV cache on single-GPU setups but avoids cloud rate limits
+active_model = "devstral-local"
+
+# --- CLOUD CONFIG (commented out) ---
+# Uncomment below and comment out the local config above to use Mistral Cloud
+# display_name = "Research (Cloud)"
+# active_model = "devstral-cloud"
 
 # Use subagent-specific prompt (without the orchestration instructions)
 system_prompt_id = "subagent"
