@@ -897,11 +897,9 @@ ENV PATH="/home/vibe/.local/bin:$PATH"
 # Copy system prompt suffix (environment context to append to cli.md)
 COPY config/system-prompt-suffix.md /tmp/system-prompt-suffix.md
 
-# Install Vibe CLI v2.0.2 from source with patches:
-# 1. Disable streaming (breaks tool calls with Ollama/vLLM backends, GitHub issue #252)
-# 2. Append Docker environment context to system prompt (cli.md)
+# Install Vibe CLI v2.0.2 from source with patch:
+# Append Docker environment context to system prompt (cli.md)
 RUN git clone --branch v2.0.2 --depth 1 https://github.com/mistralai/mistral-vibe /tmp/vibe \
-    && sed -i 's/enable_streaming=True/enable_streaming=False/' /tmp/vibe/vibe/cli/cli.py \
     && cat /tmp/system-prompt-suffix.md >> /tmp/vibe/vibe/core/prompts/cli.md \
     && /home/vibe/.local/bin/uv tool install /tmp/vibe \
     && rm -rf /tmp/vibe
