@@ -26,20 +26,28 @@ Swarm is Docker-native and sufficient for this scale.
 │                        SWARM CLUSTER                              │
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                   │
-│   MANAGER NODE (1x 64GB RAM)                                     │
+│   MANAGER NODE (1 server, 64-128GB RAM)                          │
 │   ┌────────────────────────────────────────────────────────┐     │
 │   │  • Docker daemon + Swarm manager                       │     │
 │   │  • Traefik (ingress, SSL termination)                  │     │
-│   │  • FastAPI (stateless, can scale to multiple)          │     │
+│   │  • FastAPI                                             │     │
 │   │  • Redis (session state store)                         │     │
 │   │  • Private Registry (for hibernated session images)    │     │
+│   │                                                        │     │
+│   │  If this dies: restart it. Swarm state persists on     │     │
+│   │  disk. Workers keep running existing containers.       │     │
 │   └────────────────────────────────────────────────────────┘     │
 │                                                                   │
-│   WORKER NODES (5x 128GB RAM each = 640GB total)                 │
+│   WORKER NODES (5 servers, 128GB RAM each)                       │
 │   ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐   │
 │   │  Worker 1  │ │  Worker 2  │ │  Worker 3  │ │  Worker 4  │   │
-│   │  ~160      │ │  ~160      │ │  ~160      │ │  ~160      │   │
-│   │ containers │ │ containers │ │ containers │ │ containers │...│
+│   │  ~160      │ │  ~160      │ │  ~160      │ │  ~160      │...│
+│   │ containers │ │ containers │ │ containers │ │ containers │   │
+│   │            │ │            │ │            │ │            │   │
+│   │  If dies:  │ │  If dies:  │ │  If dies:  │ │  If dies:  │   │
+│   │  sessions  │ │  sessions  │ │  sessions  │ │  sessions  │   │
+│   │  on it are │ │  on it are │ │  on it are │ │  on it are │   │
+│   │  gone (OK) │ │  gone (OK) │ │  gone (OK) │ │  gone (OK) │   │
 │   └────────────┘ └────────────┘ └────────────┘ └────────────┘   │
 │                                                                   │
 │   OVERLAY NETWORK                                                 │
@@ -53,9 +61,27 @@ Swarm is Docker-native and sufficient for this scale.
 
 ### What Each Node Is (Physically)
 
-- **Manager**: One server (physical or VM) you SSH into to run commands. Runs the control plane.
-- **Workers**: Servers that just run containers. You don't SSH into these normally.
-- **Overlay network**: Virtual LAN spanning all nodes. Containers talk by name, Docker handles routing.
+- **Manager (1 node)**: The server you SSH into. Runs control plane + services. If it dies, restart it - Swarm state persists on disk, workers keep running.
+- **Workers (5 nodes)**: Servers that run session containers. If one dies, those sessions are gone (acceptable - data is ephemeral anyway).
+- **Overlay network**: Virtual LAN spanning all nodes. Containers talk by name, Docker routes automatically.
+
+---
+
+## Failure Modes (Realistic)
+
+| What dies | What happens | Recovery |
+|-----------|--------------|----------|
+| Manager node | Workers keep running. Can't create/delete sessions. | Restart manager. |
+| Worker node | ~160 sessions on that node gone. | Users create new sessions. |
+| Single container | That session gone. | User creates new session. |
+| Redis | Session lookups fail. | Restart Redis. |
+| Registry | Can't hibernate or restore. | Restart registry. |
+
+**This is acceptable because:**
+- Data is ephemeral anyway (by design)
+- Manager restart recovers cluster state from disk
+- Worker loss = partial outage, not total outage
+- Same failure model as single-process apps (if it dies, restart it)
 
 ---
 
@@ -64,15 +90,15 @@ Swarm is Docker-native and sufficient for this scale.
 ```
 800 containers × 500MB average = 400GB RAM required
 5 workers × 128GB = 640GB RAM available
-Headroom: 240GB (37%) for bursts and overhead
+Headroom: 240GB (37%) for bursts
 ```
 
 | Resource | Requirement |
 |----------|-------------|
-| Worker nodes | 5x 128GB RAM, 32+ CPU cores |
-| Manager node | 1x 64GB RAM |
-| Network | Gigabit between nodes minimum |
-| Storage | ~100GB for hibernated images |
+| Manager node | 1x 64-128GB RAM |
+| Worker nodes | 5x 128GB RAM |
+| Network | Gigabit between nodes |
+| Registry storage | ~100GB for hibernated images |
 
 ### Estimated Cost
 
@@ -80,9 +106,7 @@ Headroom: 240GB (37%) for bursts and overhead
 Cloud (AWS/GCP):
   5 × 128GB workers    ≈ $2000/month
   1 × 64GB manager     ≈ $400/month
-  Registry + LB        ≈ $150/month
-  ─────────────────────────────────
-  Total                ≈ $2500-3000/month
+  Total                ≈ $2400/month
 
 On-prem:
   6 servers            ≈ $15-25k one-time
@@ -103,12 +127,13 @@ Container running → Idle timeout → docker commit → Image saved → Contain
 User returns → New container from saved image → Data restored
 ```
 
-**How it works:**
+**Current code (data on host - removing this):**
 ```python
-# Current (data on host - REMOVING THIS)
 "Binds": [f"{workspace_dir}:/home/vibe/workspace:rw"]
+```
 
-# New (data in container layer - EPHEMERAL)
+**New code (data in container layer - ephemeral):**
+```python
 # No Binds. Data lives only in container's writable layer.
 ```
 
@@ -117,11 +142,11 @@ User returns → New container from saved image → Data restored
 async def hibernate_session(session_id: str):
     container = docker.containers.get(container_id)
 
-    # Commit container state to image (preserves all data)
+    # Commit container state to image
     image_tag = f"registry:5000/vibe-session-{session_id}:latest"
     container.commit(repository=image_tag)
 
-    # Push to private registry (accessible from all nodes)
+    # Push to registry (accessible from all nodes)
     docker.images.push(image_tag)
 
     # Delete container (frees RAM)
@@ -134,10 +159,11 @@ async def restore_session(session_id: str):
     image_tag = f"registry:5000/vibe-session-{session_id}:latest"
 
     # Create service from hibernated image
-    docker service create \
-        --name session-{session_id} \
-        --network vibe-overlay \
-        {image_tag}
+    docker.services.create(
+        image=image_tag,
+        name=f"session-{session_id}",
+        networks=["vibe-overlay"],
+    )
 ```
 
 **Storage math:**
@@ -151,16 +177,14 @@ Total registry storage: ~82GB
 
 ## Key Architecture Changes
 
-### 1. Remove Port Allocation
+### 1. No Port Allocation (Overlay DNS Instead)
 
 ```python
 # BEFORE (doesn't scale past 1000)
-HOST_PORT_START = 17000
-HOST_PORT_END = 18000
-session.port = allocate_port()
+session.port = allocate_port()  # 17000-18000
 url = f"http://127.0.0.1:{session.port}"
 
-# AFTER (unlimited via overlay DNS)
+# AFTER (unlimited)
 container_name = f"session-{session_id}"
 url = f"http://{container_name}:7681"
 # Swarm DNS resolves to correct node automatically
@@ -173,40 +197,23 @@ url = f"http://{container_name}:7681"
 class SessionManager:
     sessions: Dict[str, Session] = {}
 
-# AFTER (Redis, shared across all FastAPI instances)
-async def create_session(session_id: str, user_id: str):
-    await redis.hset(f"session:{session_id}", mapping={
-        "user_id": user_id,
-        "state": "running",  # running | hibernated | deleted
-        "created_at": datetime.now().isoformat(),
-        "last_activity": datetime.now().isoformat(),
-    })
-    await redis.sadd(f"user:{user_id}:sessions", session_id)
-
-async def get_session(session_id: str) -> dict:
-    return await redis.hgetall(f"session:{session_id}")
+# AFTER (Redis, survives restarts)
+await redis.hset(f"session:{session_id}", mapping={
+    "user_id": user_id,
+    "state": "running",  # running | hibernated
+    "created_at": datetime.now().isoformat(),
+    "last_activity": datetime.now().isoformat(),
+})
+await redis.sadd(f"user:{user_id}:sessions", session_id)
 ```
 
-### 3. Container Creation via Swarm Services
+### 3. Swarm Services Instead of Direct Containers
 
 ```python
 # BEFORE (direct Docker API)
 container = await docker.containers.run(config=config, name=name)
 
 # AFTER (Swarm service)
-import subprocess
-subprocess.run([
-    "docker", "service", "create",
-    "--name", f"session-{session_id}",
-    "--network", "vibe-overlay",
-    "--constraint", "node.role==worker",
-    "--limit-memory", "2g",
-    "vibe-terminal:latest"
-])
-```
-
-Or via Docker SDK:
-```python
 client.services.create(
     image="vibe-terminal:latest",
     name=f"session-{session_id}",
@@ -218,51 +225,36 @@ client.services.create(
 
 ---
 
-## Swarm Setup Commands
+## Swarm Setup (One-Time)
 
-### Initialize Swarm (on Manager)
-
+### On Manager Node
 ```bash
-# On manager node
+# Initialize swarm
 docker swarm init --advertise-addr <MANAGER_IP>
 
-# Save the join token for workers
+# Get join token for workers
 docker swarm join-token worker
-```
 
-### Join Workers
+# Create overlay network
+docker network create --driver overlay --attachable vibe-overlay
 
-```bash
-# On each worker node
-docker swarm join --token <TOKEN> <MANAGER_IP>:2377
-```
-
-### Create Overlay Network
-
-```bash
-docker network create \
-    --driver overlay \
-    --attachable \
-    vibe-overlay
-```
-
-### Deploy Private Registry
-
-```bash
+# Deploy registry
 docker service create \
     --name registry \
     --publish 5000:5000 \
-    --constraint 'node.role==manager' \
     --mount type=volume,source=registry-data,destination=/var/lib/registry \
     registry:2
 ```
 
-### Verify Setup
-
+### On Each Worker Node
 ```bash
-docker node ls          # See all nodes
-docker network ls       # See overlay network
-docker service ls       # See running services
+docker swarm join --token <TOKEN> <MANAGER_IP>:2377
+```
+
+### Verify
+```bash
+docker node ls       # See all nodes
+docker service ls    # See running services
 ```
 
 ---
@@ -270,29 +262,21 @@ docker service ls       # See running services
 ## Request Flow
 
 ```
-1. User browser
-   │
-   ▼
-2. Traefik (on manager, handles SSL)
-   │  Route: /terminal/{session_id}/* → FastAPI
-   │  Route: /ttyd/{session_id}/* → session-{session_id}:7681
-   │
-   ▼
-3. FastAPI (stateless)
-   │  • Authenticates user
-   │  • Looks up session in Redis
-   │  • If hibernated: restores from image
-   │  • Returns terminal page
-   │
-   ▼
-4. WebSocket: wss://vibe.example.com/ttyd/{session_id}/ws
-   │
-   ▼
-5. Traefik proxies to session-{session_id}:7681
-   │  (Overlay network routes to correct worker node)
-   │
-   ▼
-6. ttyd in container serves terminal
+User browser
+    │
+    ▼
+Traefik (on manager, SSL termination)
+    │
+    ├── /terminal/* → FastAPI
+    │                    │
+    │                    ▼
+    │               Redis lookup
+    │                    │
+    │                    ▼
+    │               If hibernated: restore from image
+    │
+    └── /ttyd/{session_id}/* → session-{session_id}:7681
+                                (overlay network routes to correct worker)
 ```
 
 ---
@@ -300,37 +284,36 @@ docker service ls       # See running services
 ## Implementation Phases
 
 ### Phase 1: Redis Migration
-- [ ] Add Redis container to current setup
-- [ ] Migrate SessionManager to Redis-backed
+- [ ] Add Redis to current single-node setup
+- [ ] Migrate SessionManager to Redis
 - [ ] Migrate SessionOwnerStore to Redis
-- [ ] Test with single node
+- [ ] Test everything still works
 
 ### Phase 2: Remove Bind Mounts
-- [ ] Remove workspace bind mount from container config
+- [ ] Remove workspace bind mount
 - [ ] Test ephemeral data behavior
-- [ ] Add UI warning: "Data is deleted when session closes"
+- [ ] Add UI warning about data loss
 
 ### Phase 3: Swarm Setup
-- [ ] Set up manager node
-- [ ] Set up 2 worker nodes (start small)
+- [ ] Initialize swarm on manager
+- [ ] Join 2 workers (start small)
 - [ ] Create overlay network
-- [ ] Deploy private registry
+- [ ] Deploy registry
 
 ### Phase 4: Service-Based Containers
 - [ ] Change container creation to Swarm services
 - [ ] Remove port allocation code
-- [ ] Use overlay network DNS for routing
-- [ ] Update Traefik config for dynamic service discovery
+- [ ] Use overlay DNS for routing
+- [ ] Update Traefik for service discovery
 
 ### Phase 5: Hibernation
 - [ ] Implement docker commit on idle timeout
-- [ ] Implement restore from committed image
-- [ ] Add image cleanup job (delete images older than N days)
+- [ ] Implement restore from image
+- [ ] Add cleanup job for old images
 
-### Phase 6: Scale Testing
-- [ ] Add remaining worker nodes
-- [ ] Load test with 100, 200, 400, 800 containers
-- [ ] Monitor RAM, network, registry storage
+### Phase 6: Scale Up
+- [ ] Add remaining workers
+- [ ] Load test: 100 → 200 → 400 → 800 containers
 - [ ] Tune based on results
 
 ---
@@ -338,17 +321,14 @@ docker service ls       # See running services
 ## Configuration
 
 ```python
-# New configuration values for app.py
-
-# Swarm settings
-SWARM_ENABLED = True
+# Swarm
 OVERLAY_NETWORK = "vibe-overlay"
 REGISTRY_URL = "registry:5000"
 
-# Session settings
+# Sessions
 MAX_SESSIONS_PER_USER = 3
-IDLE_TIMEOUT_MINUTES = 120  # Hibernate after 2 hours idle
-HIBERNATED_TTL_DAYS = 7     # Delete hibernated images after 7 days
+IDLE_TIMEOUT_MINUTES = 120      # Hibernate after 2 hours
+HIBERNATED_TTL_DAYS = 7         # Delete images after 7 days
 
 # Redis
 REDIS_URL = "redis://redis:6379"
@@ -356,57 +336,15 @@ REDIS_URL = "redis://redis:6379"
 
 ---
 
-## Monitoring
-
-Essential metrics to track:
-
-```
-# Container metrics
-swarm_containers_running        # Total running across cluster
-swarm_containers_per_node       # Distribution across workers
-container_memory_usage          # Actual vs limit
-
-# Session metrics
-sessions_active                 # Currently connected WebSockets
-sessions_hibernated             # Stored as images
-sessions_created_total          # All-time counter
-
-# Registry metrics
-registry_storage_bytes          # Image storage used
-registry_images_count           # Number of hibernated images
-
-# Node metrics
-node_memory_available           # Per worker
-node_cpu_usage                  # Per worker
-```
-
----
-
-## Failure Scenarios
-
-| Scenario | Swarm Behavior | Data Impact |
-|----------|----------------|-------------|
-| Worker dies | Containers gone, services rescheduled | Data lost (ephemeral) |
-| Manager dies | Cluster still runs, no new operations | None |
-| Container crashes | Service auto-restarts on same/different node | Data lost |
-| Network partition | Containers continue, new ops may fail | None |
-
-**Mitigation for data loss:**
-- Clear UI warnings about ephemeral nature
-- "Download workspace" button
-- Optional: Git integration for code persistence
-
----
-
 ## Summary
 
 | Aspect | Decision |
 |--------|----------|
-| Scale target | 800 concurrent containers |
-| Orchestration | Docker Swarm |
-| Data model | Ephemeral (in-container only) |
+| Scale | 800 concurrent containers |
+| Orchestration | Docker Swarm (1 manager, 5 workers) |
+| Data | Ephemeral (in-container only) |
 | Hibernation | Docker commit to private registry |
 | Session state | Redis |
 | Networking | Overlay (no port allocation) |
-| Nodes | 1 manager (64GB) + 5 workers (128GB each) |
-| Estimated cost | ~$2500-3000/month cloud |
+| Failure model | Restart what dies. Data loss acceptable. |
+| Cost | ~$2400/month cloud |
