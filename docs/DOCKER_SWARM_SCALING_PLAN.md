@@ -38,11 +38,12 @@ Swarm is Docker-native and sufficient for this scale.
 │   │  disk. Workers keep running existing containers.       │     │
 │   └────────────────────────────────────────────────────────┘     │
 │                                                                   │
-│   WORKER NODES (7 servers, 64GB RAM each)                        │
+│   WORKER NODES (N servers, 64GB RAM each - scale as needed)      │
 │   ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐   │
 │   │  Worker 1  │ │  Worker 2  │ │  Worker 3  │ │  Worker 4  │   │
-│   │  ~115      │ │  ~115      │ │  ~115      │ │  ~115      │...│
-│   │ containers │ │ containers │ │ containers │ │ containers │   │
+│   │ containers │ │ containers │ │ containers │ │ containers │...│
+│   │ (based on  │ │ (based on  │ │ (based on  │ │ (based on  │   │
+│   │ free RAM)  │ │ free RAM)  │ │ free RAM)  │ │ free RAM)  │   │
 │   │            │ │            │ │            │ │            │   │
 │   │  If dies:  │ │  If dies:  │ │  If dies:  │ │  If dies:  │   │
 │   │  sessions  │ │  sessions  │ │  sessions  │ │  sessions  │   │
@@ -62,7 +63,7 @@ Swarm is Docker-native and sufficient for this scale.
 ### What Each Node Is (Physically)
 
 - **Manager (1 node)**: The server you SSH into. Runs control plane + services. If it dies, restart it - Swarm state persists on disk, workers keep running.
-- **Workers (7 nodes)**: Servers that run session containers (~115 each). If one dies, those sessions are gone (acceptable - data is ephemeral anyway).
+- **Workers (N nodes)**: Servers that run session containers. Swarm places containers based on available RAM. If one dies, those sessions are gone (acceptable - data is ephemeral anyway).
 - **Overlay network**: Virtual LAN spanning all nodes. Containers talk by name, Docker routes automatically.
 
 ---
@@ -72,7 +73,7 @@ Swarm is Docker-native and sufficient for this scale.
 | What dies | What happens | Recovery |
 |-----------|--------------|----------|
 | Manager node | Workers keep running. Can't create/delete sessions. | Restart manager. |
-| Worker node | ~115 sessions on that node gone. | Users create new sessions. |
+| Worker node | Sessions on that node gone. | Users create new sessions. |
 | Single container | That session gone. | User creates new session. |
 | Redis | Session lookups fail. | Restart Redis. |
 | Registry | Can't hibernate or restore. | Restart registry. |
@@ -85,33 +86,82 @@ Swarm is Docker-native and sufficient for this scale.
 
 ---
 
+## Container Resources (Current Configuration)
+
+From `server/app.py`:
+```python
+"Memory": 2147483648,  # 2GB limit per container
+# No CPU limits - containers burst to full CPU when needed
+```
+
+**We keep these same limits.** Containers get up to 2GB RAM and unlimited CPU bursting.
+
+---
+
 ## Resource Calculations
 
-```
-800 containers × 500MB average = 400GB RAM required
-7 workers × 64GB = 448GB RAM available
-Headroom: 48GB (10%) for bursts
+Swarm places containers based on **available RAM on each worker**. We don't hardcode containers-per-node.
+
+```python
+# Swarm service creation with resource constraints
+client.services.create(
+    image="vibe-terminal:latest",
+    name=f"session-{session_id}",
+    resources=Resources(
+        mem_limit=2147483648,        # 2GB limit (current behavior)
+        mem_reservation=536870912,   # 512MB reservation for scheduling
+    ),
+)
 ```
 
-| Resource | Requirement |
-|----------|-------------|
+**How Swarm scheduling works:**
+- `mem_reservation`: Swarm uses this to decide which node has capacity
+- `mem_limit`: Hard cap the container can't exceed
+- Swarm refuses to place a container if no node has enough free RAM for the reservation
+
+**Capacity depends on actual free RAM:**
+```
+Worker with 64GB total:
+  - OS + Docker overhead: ~4GB
+  - Available for containers: ~60GB
+  - With 512MB reservation: ~120 containers max
+  - With 2GB reservation: ~30 containers max
+
+Actual capacity = (worker_free_ram) / (mem_reservation)
+```
+
+**For 800 containers with 512MB reservation:**
+```
+800 × 512MB = 400GB reservations needed
+~7 workers with 60GB available each = 420GB capacity
+```
+
+**For 800 containers with 2GB reservation (guaranteed, no overcommit):**
+```
+800 × 2GB = 1600GB reservations needed
+~27 workers with 60GB available each = 1620GB capacity
+```
+
+| Strategy | Reservation | Workers Needed | Trade-off |
+|----------|-------------|----------------|-----------|
+| Overcommit | 512MB | ~7 | Risk of OOM under heavy load |
+| Guaranteed | 2GB | ~27 | Expensive but safe |
+| Middle ground | 1GB | ~14 | Balance |
+
+---
+
+## Recommended Configuration
+
+| Resource | Specification |
+|----------|---------------|
 | Manager node | 1x 64GB RAM |
-| Worker nodes | 7x 64GB RAM |
+| Worker nodes | Scale based on reservation strategy |
+| Memory limit | 2GB (current) |
+| Memory reservation | Configure based on actual usage patterns |
 | Network | Gigabit between nodes |
 | Registry storage | ~100GB for hibernated images |
 
-### Estimated Cost
-
-```
-Cloud (AWS/GCP):
-  7 × 64GB workers     ≈ $1400/month
-  1 × 64GB manager     ≈ $200/month
-  Total                ≈ $1600/month
-
-On-prem:
-  8 servers (64GB each) ≈ $12-20k one-time
-  Power/cooling         ≈ $200-400/month
-```
+**Start with fewer workers, monitor actual RAM usage, scale as needed.**
 
 ---
 
@@ -219,7 +269,10 @@ client.services.create(
     name=f"session-{session_id}",
     networks=["vibe-overlay"],
     constraints=["node.role==worker"],
-    resources=Resources(mem_limit=2147483648),
+    resources=Resources(
+        mem_limit=2147483648,       # 2GB limit (same as current)
+        mem_reservation=MEM_RESERVATION,  # Configured based on usage patterns
+    ),
 )
 ```
 
@@ -370,10 +423,10 @@ REDIS_URL = "redis://redis:6379"
 | Aspect | Decision |
 |--------|----------|
 | Scale | 800 concurrent containers |
-| Orchestration | Docker Swarm (1 manager, 7 workers, all 64GB) |
+| Orchestration | Docker Swarm (1 manager + N workers, scale based on RAM) |
 | Data | Ephemeral (in-container only) |
 | Hibernation | Docker commit to private registry |
 | Session state | Redis |
 | Networking | Overlay (no port allocation) |
 | Failure model | Restart what dies. Data loss acceptable. |
-| Cost | ~$1600/month cloud |
+| Cost | Depends on worker count (scale as needed) |
