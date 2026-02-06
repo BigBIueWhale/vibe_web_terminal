@@ -4,7 +4,7 @@
 # This agent is designed for recursive, exhaustive research tasks.
 # It can spawn additional subagents to divide and conquer complex questions.
 
-display_name = "Research (Local)"
+display_name = "Research"
 description = "Autonomous research subagent with recursive capabilities for deep investigation"
 safety = "safe"
 agent_type = "subagent"
