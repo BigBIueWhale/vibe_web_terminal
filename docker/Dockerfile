@@ -1,4 +1,4 @@
-# Ubuntu-based terminal container with Vibe CLI
+# Ubuntu-based terminal container with OpenCode CLI (+ Vibe CLI)
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -896,7 +896,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/home/vibe/.local/bin:$PATH"
 
 # Copy system prompt suffix (environment context to append to cli.md)
-COPY config/system-prompt-suffix.md /tmp/system-prompt-suffix.md
+COPY config/vibe/system-prompt-suffix.md /tmp/system-prompt-suffix.md
 
 # Install Vibe CLI v2.0.2 from source with patch:
 # Append Docker environment context to system prompt (cli.md)
@@ -909,17 +909,43 @@ RUN git clone --branch v2.0.2 --depth 1 https://github.com/mistralai/mistral-vib
 RUN mkdir -p /home/vibe/.vibe
 
 # Copy vibe configuration (will be added at build time)
-COPY --chown=vibe:vibe config/vibe-config.toml /home/vibe/.vibe/config.toml
-COPY --chown=vibe:vibe config/vibe-env /home/vibe/.vibe/.env
-COPY --chown=vibe:vibe config/vibe-trusted-folders.toml /home/vibe/.vibe/trusted_folders.toml
-COPY --chown=vibe:vibe config/agents /home/vibe/.vibe/agents
-COPY --chown=vibe:vibe config/prompts /home/vibe/.vibe/prompts
+COPY --chown=vibe:vibe config/vibe/vibe-config.toml /home/vibe/.vibe/config.toml
+COPY --chown=vibe:vibe config/vibe/vibe-env /home/vibe/.vibe/.env
+COPY --chown=vibe:vibe config/vibe/vibe-trusted-folders.toml /home/vibe/.vibe/trusted_folders.toml
+COPY --chown=vibe:vibe config/vibe/agents /home/vibe/.vibe/agents
+COPY --chown=vibe:vibe config/vibe/prompts /home/vibe/.vibe/prompts
 
 # Copy secrets file and append to .env
 # BUILD WILL FAIL if vibe-secrets.env doesn't exist - this is intentional!
 # Copy vibe-secrets.env.example to vibe-secrets.env and fill in your API keys
-COPY --chown=vibe:vibe config/vibe-secrets.env /tmp/vibe-secrets.env
+COPY --chown=vibe:vibe config/vibe/vibe-secrets.env /tmp/vibe-secrets.env
 RUN cat /tmp/vibe-secrets.env >> /home/vibe/.vibe/.env && rm /tmp/vibe-secrets.env
+
+# ============================================================
+# OPENCODE CLI (default coding agent, replaces Vibe as primary)
+# ============================================================
+# OpenCode is the community-driven MIT-licensed terminal coding agent.
+# It connects to Ollama via the OpenAI-compatible API at 172.17.0.1:11434.
+# Vibe CLI remains installed as a fallback — type "vibe" to use it.
+
+# Install OpenCode CLI v1.1.53 (pinned for reproducible builds)
+# https://github.com/anomalyco/opencode/releases/tag/v1.1.53
+# sudo needed: npm global prefix is /usr/local, owned by root
+RUN sudo npm install -g opencode-ai@1.1.53
+
+# Create OpenCode config directory
+RUN mkdir -p /home/vibe/.config/opencode
+
+# Copy OpenCode configuration (provider, model, air-gap settings)
+COPY --chown=vibe:vibe config/opencode/opencode.json /home/vibe/.config/opencode/opencode.json
+
+# Copy OpenCode custom instructions (environment context for the agent)
+COPY --chown=vibe:vibe config/opencode/opencode-agents.md /home/vibe/.config/opencode/AGENTS.md
+
+# Air-gapped environment: disable all network fetches
+ENV OPENCODE_DISABLE_MODELS_FETCH=true
+ENV OPENCODE_DISABLE_AUTOUPDATE=true
+ENV OPENCODE_DISABLE_LSP_DOWNLOAD=true
 
 # Copy session startup script (for persistent tmux sessions)
 COPY --chown=vibe:vibe config/start-session.sh /home/vibe/.local/bin/start-session.sh
@@ -949,7 +975,8 @@ RUN echo 'export PS1="\[\033[1;32m\]\u@vibe-terminal\[\033[0m\]:\[\033[1;34m\]\w
     && echo 'echo "  Shift + drag                 Native browser text selection"' >> /home/vibe/.bashrc \
     && echo 'echo "  Scroll wheel                 Scroll terminal history"' >> /home/vibe/.bashrc \
     && echo 'echo ""' >> /home/vibe/.bashrc \
-    && echo 'echo "- Type \"vibe\" to start Mistral Vibe CLI"' >> /home/vibe/.bashrc \
+    && echo 'echo "- Type \"opencode\" to start OpenCode CLI (default agent)"' >> /home/vibe/.bashrc \
+    && echo 'echo "- Type \"vibe\" to start Mistral Vibe CLI (legacy)"' >> /home/vibe/.bashrc \
     && echo 'echo "- Your workspace is /home/vibe/workspace"' >> /home/vibe/.bashrc \
     && echo 'echo "- Password for sudo: password"' >> /home/vibe/.bashrc \
     && echo 'echo ""' >> /home/vibe/.bashrc
