@@ -46,6 +46,7 @@ RUN apt-get update && apt-get install -y \
     strace \
     ltrace \
     lsof \
+    psmisc \
     sysstat \
     patch \
     diffutils \
