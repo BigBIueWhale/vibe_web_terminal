@@ -933,10 +933,23 @@ RUN cat /tmp/vibe-secrets.env >> /home/vibe/.vibe/.env && rm /tmp/vibe-secrets.e
 # sudo needed: npm global prefix is /usr/local, owned by root
 RUN sudo npm install -g opencode-ai@1.1.53
 
+# Pre-install ai-sdk-ollama provider (native Ollama API instead of OpenAI-compat layer)
+# Pinned to v2.2.0: last version compatible with AI SDK v5 (OpenCode v1.1.53 uses ai@5.x)
+# v3.x requires AI SDK v6 and is NOT compatible. OpenCode's dynamic installer always
+# fetches @latest (which is v3.x), so we pre-install and use file:// in the config.
+# ai-sdk-ollama uses the official 'ollama' npm client for native API access (/api/chat)
+# instead of going through Ollama's OpenAI compatibility layer (/v1/chat/completions).
+RUN sudo npm install --prefix /opt/ai-providers ai-sdk-ollama@2.2.0
+
 # Create OpenCode config directory
 RUN mkdir -p /home/vibe/.config/opencode
 
 # Copy OpenCode configuration (provider, model, air-gap settings)
+# NOTE: Model ID must contain "devstral" (case-insensitive) to trigger OpenCode's
+# Mistral-specific message normalization (transform.ts:87-131). This normalizes
+# tool call IDs to 9-char alphanumeric (Mistral requirement) and inserts bridging
+# "Done." messages between tool-result→user transitions. Without this, multi-turn
+# tool calling will break with Devstral/Mistral models.
 COPY --chown=vibe:vibe config/opencode/opencode.json /home/vibe/.config/opencode/opencode.json
 
 # Copy OpenCode custom instructions (environment context for the agent)

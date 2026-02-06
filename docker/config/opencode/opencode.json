@@ -2,10 +2,10 @@
   "$schema": "https://opencode.ai/config.json",
   "provider": {
     "ollama": {
-      "npm": "@ai-sdk/openai-compatible",
+      "npm": "file:///opt/ai-providers/node_modules/ai-sdk-ollama",
       "name": "Ollama (local)",
       "options": {
-        "baseURL": "http://172.17.0.1:11434/v1"
+        "baseURL": "http://172.17.0.1:11434"
       },
       "models": {
         "devstral-vibe": {
