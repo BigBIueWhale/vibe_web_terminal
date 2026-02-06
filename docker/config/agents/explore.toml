@@ -9,14 +9,9 @@ description = "Autonomous research subagent with recursive capabilities for deep
 safety = "safe"
 agent_type = "subagent"
 
-# Use local Ollama for subagent inference
-# Note: This evicts KV cache on single-GPU setups but avoids cloud rate limits
-active_model = "devstral-local"
-
-# --- CLOUD CONFIG (commented out) ---
-# Uncomment below and comment out the local config above to use Mistral Cloud
-# display_name = "Research (Cloud)"
-# active_model = "devstral-cloud"
+# TOGGLE: Swap the commented/uncommented lines to switch between cloud and local
+# active_model = "devstral-local"
+active_model = "devstral-cloud"
 
 # Use subagent-specific prompt (without the orchestration instructions)
 system_prompt_id = "subagent"
