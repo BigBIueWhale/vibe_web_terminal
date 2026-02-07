@@ -9,9 +9,9 @@
 # Core Settings
 # =============================================================================
 
-# TOGGLE: "devstral-local" for Ollama, "devstral-cloud" for Mistral API
-active_model = "devstral-local"
-# active_model = "devstral-cloud"
+# Set at container start by VIBE_MODE env var (local|cloud)
+# "devstral-local" = Ollama, "devstral-cloud" = Mistral API
+active_model = "__VIBE_ACTIVE_MODEL__"
 textual_theme = "atom-one-dark"
 
 # Disable auto-update (we're running a patched version from source)

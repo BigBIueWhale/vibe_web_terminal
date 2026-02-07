@@ -984,6 +984,10 @@ COPY --chown=vibe:vibe config/opencode/opencode.json /home/vibe/.config/opencode
 # Copy OpenCode custom instructions (environment context for the agent)
 COPY --chown=vibe:vibe config/opencode/opencode-agents.md /home/vibe/.config/opencode/AGENTS.md
 
+# Runtime model toggle: "local" = Ollama, "cloud" = Mistral API
+# Override at container start: docker run -e VIBE_MODE=cloud ...
+ENV VIBE_MODE=local
+
 # Air-gapped environment: disable all network fetches
 ENV OPENCODE_DISABLE_MODELS_FETCH=true
 ENV OPENCODE_DISABLE_AUTOUPDATE=true

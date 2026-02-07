@@ -10,6 +10,13 @@ set -a
 source ~/.vibe/.env 2>/dev/null
 set +a
 
+# Configure Vibe CLI model based on VIBE_MODE env var (default: local)
+if [ "$VIBE_MODE" = "cloud" ]; then
+    sed -i 's/__VIBE_ACTIVE_MODEL__/devstral-cloud/' ~/.vibe/config.toml
+else
+    sed -i 's/__VIBE_ACTIVE_MODEL__/devstral-local/' ~/.vibe/config.toml
+fi
+
 SESSION_NAME="vibe"
 
 # Check if tmux session exists

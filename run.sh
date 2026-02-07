@@ -17,6 +17,7 @@ UPSTREAM_HOST=127.0.0.1
 UPSTREAM_PORT=8081
 NO_SSL=false
 AUTO_CERT=true  # Pass --auto-cert to rust_proxy by default
+VIBE_MODE="${VIBE_MODE:-local}"  # local = Ollama, cloud = Mistral API
 
 # =============================================================================
 # Usage
@@ -37,6 +38,8 @@ Options:
   --no-ssl              Run without SSL (development only)
   --no-auto-cert        Use existing certificates instead of auto-generating
                         Required when using externally signed certificates
+  --vibe-mode MODE      Vibe CLI model mode: "local" (Ollama) or "cloud" (Mistral API)
+                        (default: local, or VIBE_MODE env var)
   -h, --help            Show this help message
 
 Examples:
@@ -90,6 +93,10 @@ while [[ $# -gt 0 ]]; do
         --no-auto-cert)
             AUTO_CERT=false
             shift
+            ;;
+        --vibe-mode)
+            VIBE_MODE="$2"
+            shift 2
             ;;
         -h|--help)
             usage
@@ -181,7 +188,7 @@ fi
 # =============================================================================
 
 # Start backend server
-run_python "$SCRIPT_DIR/server/app.py" &
+run_python "$SCRIPT_DIR/server/app.py" --vibe-mode "$VIBE_MODE" &
 SERVER_PID=$!
 
 # Start reverse proxy

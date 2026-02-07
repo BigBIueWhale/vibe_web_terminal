@@ -46,6 +46,7 @@ SERVER_PORT = 8081
 # Configuration
 DOCKER_IMAGE = "vibe-terminal:latest"
 CONTAINER_PREFIX = "vibe-session-"
+VIBE_MODE = "local"  # "local" (Ollama) or "cloud" (Mistral API) — set via --vibe-mode
 MAX_SESSIONS_PER_USER = 3
 # No automatic cleanup - containers persist until user deletes them
 SESSION_TIMEOUT_HOURS = None  # Disabled
@@ -290,7 +291,10 @@ class SessionManager:
         # No CPU limits: let containers burst to full CPU when available.
         config = {
             "Image": DOCKER_IMAGE,
-            "Env": ["TERM=xterm-256color"],
+            "Env": [
+                "TERM=xterm-256color",
+                f"VIBE_MODE={VIBE_MODE}",
+            ],
             "HostConfig": {
                 "PortBindings": {
                     "7681/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(session.port)}]
@@ -1545,8 +1549,17 @@ async def http_proxy(request: Request, session_id: str, path: str = ""):
 
 
 if __name__ == "__main__":
+    import argparse
     import uvicorn
     import sys
+
+    parser = argparse.ArgumentParser(description="Vibe Web Terminal server")
+    parser.add_argument(
+        "--vibe-mode", choices=["local", "cloud"], default="local",
+        help="Vibe CLI model mode: local (Ollama) or cloud (Mistral API)",
+    )
+    args = parser.parse_args()
+    VIBE_MODE = args.vibe_mode
 
     try:
         from server.auth import is_auth_enabled
