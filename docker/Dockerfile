@@ -1025,8 +1025,8 @@ RUN echo 'export PS1="\[\033[1;32m\]\u@vibe-terminal\[\033[0m\]:\[\033[1;34m\]\w
     && echo 'echo "  Shift + drag                 Native browser text selection"' >> /home/vibe/.bashrc \
     && echo 'echo "  Scroll wheel                 Scroll terminal history"' >> /home/vibe/.bashrc \
     && echo 'echo ""' >> /home/vibe/.bashrc \
-    && echo 'echo "- Type \"opencode\" to start OpenCode CLI (default agent)"' >> /home/vibe/.bashrc \
-    && echo 'echo "- Type \"vibe\" to start Mistral Vibe CLI (legacy)"' >> /home/vibe/.bashrc \
+    && echo 'echo "- Type \"vibe --agent auto-approve\" to start Vibe CLI (default)"' >> /home/vibe/.bashrc \
+    && echo 'echo "- Type \"opencode\" to start OpenCode CLI"' >> /home/vibe/.bashrc \
     && echo 'echo "- Your workspace is /home/vibe/workspace"' >> /home/vibe/.bashrc \
     && echo 'echo "- Password for sudo: password"' >> /home/vibe/.bashrc \
     && echo 'echo ""' >> /home/vibe/.bashrc
