@@ -719,34 +719,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     apt-get update && apt-get install -y gh && \
     rm -rf /var/lib/apt/lists/*
 
-# Modern CLI tools (pre-built binaries):
-# eza (modern ls), delta (git diffs), dust (disk usage), duf (disk free), glow (markdown),
-# lazygit (TUI git), just (task runner), hyperfine (benchmarking), sd (sed replacement),
-# tokei (code stats), gron (greppable JSON), pup (jq for HTML), zellij (terminal multiplexer)
-RUN wget -qO- https://github.com/eza-community/eza/releases/latest/download/eza_x86_64-unknown-linux-gnu.tar.gz | tar xz -C /usr/local/bin/ && \
-    wget -qO /tmp/delta.deb https://github.com/dandavison/delta/releases/download/0.18.2/git-delta_0.18.2_amd64.deb && dpkg -i /tmp/delta.deb && rm /tmp/delta.deb && \
-    wget -qO /tmp/dust.deb https://github.com/bootandy/dust/releases/download/v1.1.1/du-dust_1.1.1-1_amd64.deb && dpkg -i /tmp/dust.deb && rm /tmp/dust.deb && \
-    wget -qO /tmp/duf.deb https://github.com/muesli/duf/releases/download/v0.8.1/duf_0.8.1_linux_amd64.deb && dpkg -i /tmp/duf.deb && rm /tmp/duf.deb && \
-    wget -qO /tmp/glow.deb https://github.com/charmbracelet/glow/releases/download/v2.0.0/glow_2.0.0_amd64.deb && dpkg -i /tmp/glow.deb && rm /tmp/glow.deb && \
-    wget -qO /tmp/hyperfine.deb https://github.com/sharkdp/hyperfine/releases/download/v1.19.0/hyperfine_1.19.0_amd64.deb && dpkg -i /tmp/hyperfine.deb && rm /tmp/hyperfine.deb && \
-    LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*') && \
-    curl -Lo /tmp/lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz" && \
-    tar xf /tmp/lazygit.tar.gz -C /usr/local/bin lazygit && rm /tmp/lazygit.tar.gz && \
-    wget -qO- https://just.systems/install.sh | bash -s -- --to /usr/local/bin && \
-    wget -qO /tmp/sd.tar.gz https://github.com/chmln/sd/releases/download/v1.0.0/sd-v1.0.0-x86_64-unknown-linux-gnu.tar.gz && \
-    tar xf /tmp/sd.tar.gz -C /tmp && cp /tmp/sd-v1.0.0-x86_64-unknown-linux-gnu/sd /usr/local/bin/ && chmod +x /usr/local/bin/sd && rm -rf /tmp/sd* && \
-    wget -qO /tmp/tokei.tar.gz https://github.com/XAMPPRocky/tokei/releases/download/v12.1.2/tokei-x86_64-unknown-linux-gnu.tar.gz && \
-    tar xf /tmp/tokei.tar.gz -C /usr/local/bin && chmod +x /usr/local/bin/tokei && rm /tmp/tokei.tar.gz && \
-    wget -qO /tmp/gron.tar.gz https://github.com/tomnomnom/gron/releases/download/v0.7.1/gron-linux-amd64-0.7.1.tgz && \
-    tar xf /tmp/gron.tar.gz -C /usr/local/bin && chmod +x /usr/local/bin/gron && rm /tmp/gron.tar.gz && \
-    wget -qO /tmp/pup.zip https://github.com/ericchiang/pup/releases/download/v0.4.0/pup_v0.4.0_linux_amd64.zip && \
-    unzip -o /tmp/pup.zip -d /usr/local/bin && chmod +x /usr/local/bin/pup && rm /tmp/pup.zip && \
-    wget -qO /tmp/zellij.tar.gz https://github.com/zellij-org/zellij/releases/latest/download/zellij-x86_64-unknown-linux-musl.tar.gz && \
-    tar xf /tmp/zellij.tar.gz -C /usr/local/bin && chmod +x /usr/local/bin/zellij && rm /tmp/zellij.tar.gz
+# glow (Charmbracelet — markdown reader)
+RUN wget -qO /tmp/glow.deb https://github.com/charmbracelet/glow/releases/download/v2.0.0/glow_2.0.0_amd64.deb && dpkg -i /tmp/glow.deb && rm /tmp/glow.deb
 
-# Starship prompt & rclone
-RUN curl -sS https://starship.rs/install.sh | sh -s -- --yes && \
-    curl -fsSL https://rclone.org/install.sh | bash
+# rclone (cloud storage swiss army knife)
+RUN curl -fsSL https://rclone.org/install.sh | bash
 
 # Azure CLI
 RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash && \
