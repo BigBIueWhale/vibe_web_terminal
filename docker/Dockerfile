@@ -355,6 +355,8 @@ RUN npm install -g \
     markdown-it \
     highlight.js \
     mermaid \
+    @mermaid-js/mermaid-cli \
+    md-to-pdf \
     d3 \
     puppeteer-extra \
     puppeteer-extra-plugin-stealth \
@@ -578,6 +580,12 @@ RUN apt-get update && apt-get install -y \
     xfonts-utils \
     && rm -rf /var/lib/apt/lists/* && fc-cache -fv
 
+# PlantUML (uses graphviz + default-jre-headless already installed above)
+RUN curl -fsSL -o /usr/local/lib/plantuml.jar \
+      https://github.com/plantuml/plantuml/releases/download/v1.2025.0/plantuml-1.2025.0.jar \
+    && printf '#!/bin/sh\nexec java -jar /usr/local/lib/plantuml.jar "$@"\n' > /usr/local/bin/plantuml \
+    && chmod +x /usr/local/bin/plantuml
+
 # Terminal libraries, codecs (GStreamer dropped to save ~200 MB), language packs
 # Language packs available but do NOT change the default LANG/LC_ALL (C.UTF-8 supports full Unicode/emoji)
 RUN apt-get update && apt-get install -y \
@@ -771,7 +779,8 @@ RUN pip3 install --break-system-packages --no-cache-dir \
     python-bidi arabic-reshaper PyICU pyfribidi hebrew-tokenizer camel-tools \
     azure-devops azure-cli-core azure-identity azure-storage-blob azure-storage-file-share msrest msal \
     openpyxl xlrd xlsxwriter xlwt odfpy python-docx python-pptx python-calamine mammoth docx2txt striprtf ebooklib csvkit petl \
-    pypandoc markdownify html2text filetype python-magic xmltodict dicttoxml
+    pypandoc markdownify html2text filetype python-magic xmltodict dicttoxml \
+    mwclient mwparserfromhell wikitextparser
 
 # Multimedia, OCR, image processing
 RUN pip3 install --break-system-packages --no-cache-dir \
