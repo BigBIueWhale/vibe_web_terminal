@@ -997,6 +997,10 @@ ENV OPENCODE_DISABLE_LSP_DOWNLOAD=true
 COPY --chown=vibe:vibe config/start-session.sh /home/vibe/.local/bin/start-session.sh
 RUN chmod +x /home/vibe/.local/bin/start-session.sh
 
+# Copy container entrypoint (one-time setup: applies VIBE_MODE, then starts ttyd)
+COPY --chown=vibe:vibe config/entrypoint.sh /home/vibe/.local/bin/entrypoint.sh
+RUN chmod +x /home/vibe/.local/bin/entrypoint.sh
+
 # Copy tmux configuration
 COPY --chown=vibe:vibe config/tmux.conf /home/vibe/.tmux.conf
 
@@ -1032,12 +1036,6 @@ WORKDIR /home/vibe/workspace
 # Expose ttyd port
 EXPOSE 7681
 
-# Default command: start ttyd with persistent tmux session
-# -W: Writable (allow client input)
-# -p 7681: Port
-# -t fontSize=14: Font size
-# -t scrollback=10000: 10k line scrollback
-# -t cursorStyle=bar: Bar cursor
-# -t cursorBlink=true: Blinking cursor
-# Uses start-session.sh to maintain tmux session across page refreshes
-CMD ["/usr/local/bin/ttyd", "-W", "-p", "7681", "-t", "fontSize=14", "-t", "scrollback=10000", "-t", "cursorStyle=bar", "-t", "cursorBlink=true", "/home/vibe/.local/bin/start-session.sh"]
+# Entrypoint: applies VIBE_MODE to Vibe CLI config, then starts ttyd
+# See config/entrypoint.sh for ttyd flags and details
+CMD ["/home/vibe/.local/bin/entrypoint.sh"]
