@@ -50,8 +50,8 @@ api_timeout = 900.0
 # This avoids KV cache eviction since subagents don't compete for local GPU.
 #
 # TOGGLE: To DISABLE subagents entirely, uncomment this line:
-# disabled_tools = ["task"]
-disabled_tools = []
+disabled_tools = ["task"]
+# disabled_tools = []
 
 [tools.bash]
 # Generous timeout for complex operations (5 minutes)

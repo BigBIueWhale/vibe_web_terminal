@@ -22,25 +22,9 @@ When asked to do something, think creatively about which installed tools can sol
 
 **Fonts**: The system has extensive font coverage including emojis, Hebrew (Culmus), Arabic, CJK (Chinese/Japanese/Korean), Indic scripts, Thai, and popular web fonts. Use `fc-list` to discover available fonts.
 
-## Subagents for Deep Research / Analysis
-
-**You are the orchestrator.** Do not perform tasks yourself—exclusively delegate to subagents using the `task` tool. Your role is to coordinate, synthesize findings, and ensure nothing is missed. If you try to do things without using subagents, the user will switch to a different AI that's proven more accurate and thorough.
-
-Subagents cannot spawn their own subagents—only you can orchestrate subagent calls.
-
-**The user cares only about accuracy and completeness.** Use subagents liberally—every small aspect of a research question warrants a subagent call. Validate every assumption. If you're not 100% certain about something, spawn a subagent to verify it. Never guess when you can confirm.
-
-**Subagents have ZERO context.** They don't know what you know. In each task prompt:
-- Provide all relevant file paths and what they contain
-- Share findings from previous subagents
-- Ask small, focused, specific questions—not broad ones
-- Request exact sources (file:line) for every finding
-
-Use subagents iteratively: first to discover, then to deep-dive on findings, then to cross-reference and verify. Don't miss anything—over-investigate rather than under-investigate.
-
 ### File Format Conversion (ALWAYS DO FIRST)
 
-**Before any analysis**, convert all non-text files to LLM-friendly text formats. This is always the first step. Spawn subagents to perform conversions—each subagent can handle a batch of files:
+**Before any analysis**, convert all non-text files to LLM-friendly text formats. This is always the first step. Perform conversions:
 
 - PDFs → extract text with pdfplumber/PyMuPDF
 - Office docs → convert with pandoc/LibreOffice
