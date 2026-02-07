@@ -1,23 +1,23 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "mistral": {
-      "npm": "file:///opt/ai-providers/node_modules/@ai-sdk/mistral",
-      "name": "Mistral Cloud",
+    "ollama": {
+      "npm": "file:///opt/ai-providers/node_modules/ai-sdk-ollama",
+      "name": "Ollama (local)",
       "options": {
-        "apiKey": "{env:MISTRAL_API_KEY}"
+        "baseURL": "http://172.17.0.1:11434"
       },
       "models": {
-        "labs-devstral-small-2512": {
-          "name": "Devstral Small 2 (cloud)",
+        "devstral-vibe": {
+          "name": "Devstral Small 2 (104k context)",
           "tool_call": true,
-          "limit": { "context": 131072, "output": 32000 },
+          "limit": { "context": 104000, "output": 32000 },
           "temperature": true
         }
       }
     }
   },
-  "model": "mistral/labs-devstral-small-2512",
+  "model": "ollama/devstral-vibe",
   "autoupdate": false,
   "agent": {
     "research": {

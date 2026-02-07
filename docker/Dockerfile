@@ -204,12 +204,18 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Network packet analysis (wireshark-common includes editcap, mergecap, capinfos, etc.)
+# Deep pcap analysis: termshark (TUI wireshark), tcptrace, tcpstat, ssldump, tcpick,
+#   tcpxtract/foremost (file extraction), chaosreader/httpry (session reconstruction),
+#   netsniff-ng (high-perf toolkit), zeek (protocol logs from pcap), suricata (offline IDS),
+#   nfdump/argus-client (flow analysis), p0f (passive fingerprinting), sngrep (SIP/VoIP),
+#   dnstop (DNS analysis), hping3 (packet crafting), dsniff (network audit suite)
 # Python, Node.js, headless browser deps (Playwright provides its own Chromium)
 # Java Runtime (JRE only — JDK dropped to save ~50 MB; only needed for tabula-py)
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     libpcap-dev \
     tshark \
     wireshark-common \
+    wireshark-doc \
     tcpreplay \
     tcpflow \
     ngrep \
@@ -222,6 +228,26 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     ethtool \
     ipset \
     conntrack \
+    termshark \
+    tcptrace \
+    tcpstat \
+    ssldump \
+    tcpick \
+    tcpxtract \
+    chaosreader \
+    foremost \
+    httpry \
+    netsniff-ng \
+    hping3 \
+    p0f \
+    dsniff \
+    sngrep \
+    dnstop \
+    nbtscan \
+    httping \
+    nfdump \
+    argus-client \
+    suricata \
     python3 \
     python3-pip \
     python3-venv \
@@ -808,7 +834,7 @@ RUN pip3 install --break-system-packages --no-cache-dir \
 # Financial, PCAP, agent tools
 RUN pip3 install --break-system-packages --no-cache-dir \
     yfinance pandas-ta prophet arch pmdarima tslearn sktime \
-    scapy dpkt pyshark kamene pcapng python-pcapng impacket netaddr ipaddress netifaces \
+    scapy dpkt pyshark kamene pcapng python-pcapng impacket netaddr ipaddress netifaces nfstream \
     bpython ptpython xonsh jupyter-console litecli pgcli mycli iredis \
     glances ansible ansible-lint molecule \
     tldr howdoi thefuck cookiecutter copier cruft bump2version semantic-version twine build flit hatch pdm poetry \
@@ -939,7 +965,10 @@ RUN sudo npm install -g opencode-ai@1.1.53
 # fetches @latest (which is v3.x), so we pre-install and use file:// in the config.
 # ai-sdk-ollama uses the official 'ollama' npm client for native API access (/api/chat)
 # instead of going through Ollama's OpenAI compatibility layer (/v1/chat/completions).
-RUN sudo npm install --prefix /opt/ai-providers ai-sdk-ollama@2.2.0
+# RUN sudo npm install --prefix /opt/ai-providers ai-sdk-ollama@2.2.0
+# @ai-sdk/mistral: Vercel AI SDK Mistral provider for Mistral Cloud API
+# Pinned to v2.0.27: last major compatible with AI SDK v5 (v3.x requires AI SDK v6)
+RUN sudo npm install --prefix /opt/ai-providers @ai-sdk/mistral@2.0.27
 
 # Create OpenCode config directory
 RUN mkdir -p /home/vibe/.config/opencode

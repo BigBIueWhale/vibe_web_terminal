@@ -10,8 +10,8 @@ safety = "safe"
 agent_type = "subagent"
 
 # TOGGLE: Swap the commented/uncommented lines to switch between cloud and local
-# active_model = "devstral-local"
-active_model = "devstral-cloud"
+active_model = "devstral-local"
+# active_model = "devstral-cloud"
 
 # Use subagent-specific prompt (without the orchestration instructions)
 system_prompt_id = "subagent"

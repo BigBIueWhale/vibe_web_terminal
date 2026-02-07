@@ -5,6 +5,11 @@
 # Fix workspace ownership (mounted from host with different UID)
 sudo chown -R vibe:vibe /home/vibe/workspace 2>/dev/null
 
+# Export secrets (e.g. MISTRAL_API_KEY) so OpenCode can read them
+set -a
+source ~/.vibe/.env 2>/dev/null
+set +a
+
 SESSION_NAME="vibe"
 
 # Check if tmux session exists
