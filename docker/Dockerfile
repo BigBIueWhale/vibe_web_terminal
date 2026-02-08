@@ -810,7 +810,7 @@ RUN pip3 install --break-system-packages --no-cache-dir \
 RUN pip3 install --break-system-packages --no-cache-dir \
     click typer rich pydantic loguru structlog tenacity retry environs colorama termcolor blessed \
     prompt-toolkit questionary alive-progress yaspin humanize inflect natsort semver \
-    textual textual-dev urwid npyscreen asciimatics pytermgui py-cui curtsies wcwidth emoji unicodedata2 \
+    textual textual-dev urwid npyscreen asciimatics pytermgui curtsies wcwidth emoji unicodedata2 \
     pyfiglet art asciichartpy plotext drawille colored blessings sty ansicolors colorful pastel termtables terminaltables \
     tox nox black ruff isort flake8 mypy pylint bandit safety vulture pyflakes autopep8 yapf pre-commit \
     pytest pytest-cov pytest-asyncio pytest-xdist pytest-mock pytest-benchmark hypothesis coverage faker factory-boy responses vcrpy freezegun time-machine \
