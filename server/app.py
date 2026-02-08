@@ -288,7 +288,6 @@ class SessionManager:
                 raise
 
         # Create container on default bridge (iptables handles isolation)
-        # No CPU limits: let containers burst to full CPU when available.
         config = {
             "Image": DOCKER_IMAGE,
             "Env": [
@@ -302,6 +301,7 @@ class SessionManager:
                 "Binds": [f"{workspace_dir}:/home/vibe/workspace:rw"],
                 "ExtraHosts": ["host.docker.internal:host-gateway"],
                 "Memory": 2147483648,  # 2GB
+                "NanoCpus": 2000000000,  # 2 CPU cores
                 "RestartPolicy": {"Name": "unless-stopped"},
             },
         }
