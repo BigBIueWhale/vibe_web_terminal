@@ -809,7 +809,7 @@ RUN pip3 install --break-system-packages --no-cache-dir \
 # CLI, TUI, dev tools, testing, profiling, Jupyter
 RUN pip3 install --break-system-packages --no-cache-dir \
     click typer rich pydantic loguru structlog tenacity retry environs colorama termcolor blessed \
-    prompt-toolkit questionary alive-progress halo yaspin humanize inflect natsort semver \
+    prompt-toolkit questionary alive-progress yaspin humanize inflect natsort semver \
     textual textual-dev urwid npyscreen asciimatics pytermgui py-cui curtsies wcwidth emoji unicodedata2 \
     pyfiglet art asciichartpy plotext drawille colored blessings sty ansicolors colorful pastel termtables terminaltables \
     tox nox black ruff isort flake8 mypy pylint bandit safety vulture pyflakes autopep8 yapf pre-commit \
