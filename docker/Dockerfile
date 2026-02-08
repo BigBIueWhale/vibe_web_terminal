@@ -750,7 +750,8 @@ RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash && \
 # Fix system packages and install base
 RUN find /usr/lib/python3/dist-packages /usr/lib/python3.12/dist-packages \
         -name '*.dist-info' -type d ! -exec test -f '{}/RECORD' \; -exec rm -rf '{}' + 2>/dev/null; \
-    pip3 install --break-system-packages --no-cache-dir setuptools wheel packaging charset-normalizer
+    pip3 install --break-system-packages --no-cache-dir setuptools wheel packaging charset-normalizer && \
+    pip3 install --break-system-packages --no-cache-dir --upgrade pbr
 
 # Data processing, analysis, visualization
 RUN pip3 install --break-system-packages --no-cache-dir \
@@ -824,7 +825,7 @@ RUN pip3 install --break-system-packages --no-cache-dir \
     truststore certvalidator oscrypto tls-parser sslyze tlslite-ng scrypt jwcrypto \
     shapely geopandas folium pyproj fiona rasterio geopy \
     boto3 google-cloud-storage python-dotenv python-multipart jinja2 mako markdown python-markdown-math celery dramatiq apscheduler watchdog luigi prefect \
-    h5py tables fastparquet msgpack cbor2 protobuf flatbuffers lz4 zstandard brotli python-snappy avro-python3 fastavro \
+    h5py tables fastparquet msgpack cbor2 protobuf flatbuffers lz4 zstandard brotli python-snappy avro fastavro \
     attrs cattrs dataclasses-json marshmallow cerberus dynaconf python-decouple omegaconf hydra-core typeguard beartype \
     sh plumbum invoke doit psutil supervisor gitpython pygithub dulwich \
     cachetools diskcache dogpile.cache aiocache trio anyio \
