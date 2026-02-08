@@ -36,7 +36,7 @@ Internet --> rust_proxy :8443 (SSL) --> localhost:8081 (FastAPI)
 
 - Docker
 - Python 3.10+
-- Ollama running and accessible from Docker containers (see Networking section)
+- Ollama from [PR #14140](https://github.com/ollama/ollama/pull/14140) running and accessible from Docker containers (see Networking section)
 
 ## Installing Docker (Ubuntu/Debian)
 
