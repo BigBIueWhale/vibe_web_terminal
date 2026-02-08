@@ -708,8 +708,21 @@ RUN apt-get update && apt-get install -y \
     perl \
     lua5.4 \
     liblua5.4-dev \
+    luarocks \
+    lua-lpeg \
+    lua-cjson \
+    lua-socket \
+    lua-filesystem \
+    lua-sec \
     r-base-core \
     && rm -rf /var/lib/apt/lists/*
+
+# Lua extras for Wireshark custom dissector development
+# luarocks packages for binary protocol parsing and data manipulation
+RUN luarocks install struct && \
+    luarocks install lua-zlib && \
+    luarocks install lua-messagepack && \
+    luarocks install luabitop
 
 # GitHub CLI (gh) - essential for agents interacting with GitHub
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -993,6 +1006,46 @@ RUN chmod +x /home/vibe/.local/bin/entrypoint.sh
 
 # Copy tmux configuration
 COPY --chown=vibe:vibe config/tmux.conf /home/vibe/.tmux.conf
+
+# Wireshark Lua plugin directories + sample dissector skeleton
+# Personal plugin dir: tshark/wireshark auto-loads all .lua files here
+# init.lua extends package paths so luarocks modules (lpeg, struct, etc.) are available
+RUN mkdir -p /home/vibe/.local/lib/wireshark/plugins \
+    && printf '%s\n' \
+        '-- Wireshark personal init.lua' \
+        '-- Extend Lua paths so luarocks-installed modules are available in dissectors' \
+        'package.path = package.path .. ";/usr/local/share/lua/5.4/?.lua;/usr/local/share/lua/5.4/?/init.lua"' \
+        'package.cpath = package.cpath .. ";/usr/local/lib/lua/5.4/?.so"' \
+        > /home/vibe/.local/lib/wireshark/plugins/init.lua \
+    && printf '%s\n' \
+        '-- Example Wireshark Lua dissector skeleton' \
+        '-- Place .lua dissectors in ~/.local/lib/wireshark/plugins/' \
+        '-- They are loaded automatically by tshark/wireshark.' \
+        '--' \
+        '-- Usage: tshark -r capture.pcap' \
+        '-- Or:    tshark -X lua_script:my_dissector.lua -r capture.pcap' \
+        '--' \
+        '-- local my_proto = Proto("myproto", "My Custom Protocol")' \
+        '--' \
+        '-- my_proto.fields = {' \
+        '--     ProtoField.uint8("myproto.type", "Type", base.HEX),' \
+        '--     ProtoField.uint16("myproto.length", "Length", base.DEC),' \
+        '--     ProtoField.bytes("myproto.payload", "Payload"),' \
+        '-- }' \
+        '--' \
+        '-- function my_proto.dissector(buffer, pinfo, tree)' \
+        '--     pinfo.cols.protocol = my_proto.name' \
+        '--     local subtree = tree:add(my_proto, buffer(), "My Protocol Data")' \
+        '--     subtree:add(my_proto.fields[1], buffer(0, 1))' \
+        '--     subtree:add(my_proto.fields[2], buffer(1, 2))' \
+        '--     subtree:add(my_proto.fields[3], buffer(3))' \
+        '-- end' \
+        '--' \
+        '-- -- Register on a UDP port:' \
+        '-- -- DissectorTable.get("udp.port"):add(12345, my_proto)' \
+        '-- -- Or as a heuristic dissector:' \
+        '-- -- my_proto:register_heuristic("udp", my_heuristic_checker)' \
+        > /home/vibe/.local/lib/wireshark/plugins/example_dissector.lua
 
 # Create workspace directory for user files
 RUN mkdir -p /home/vibe/workspace
