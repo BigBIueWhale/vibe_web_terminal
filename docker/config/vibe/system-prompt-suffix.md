@@ -52,6 +52,7 @@ Subagents cannot spawn their own subagents — only you can orchestrate.
 - Share findings from previous subagents
 - Ask small, focused, specific questions — not broad ones
 - Request exact sources (file:line) for every finding
+- **Subagents treat the workspace as read-only by default.** If you want a subagent to create, modify, or delete files, you must explicitly tell it that it's allowed to in your task prompt. Otherwise it will only report findings.
 
 Use subagents iteratively: first to discover, then to deep-dive on findings, then to cross-reference and verify. Don't miss anything — over-investigate rather than under-investigate.
 
