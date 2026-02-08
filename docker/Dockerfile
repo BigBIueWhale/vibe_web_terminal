@@ -820,7 +820,7 @@ RUN pip3 install --break-system-packages --no-cache-dir \
 # Crypto, geo, cloud, serialization, config, utilities
 RUN pip3 install --break-system-packages --no-cache-dir \
     cryptography pynacl pycryptodome pycryptodomex bcrypt argon2-cffi passlib hashids pyjwt "python-jose[cryptography]" \
-    itsdangerous fernet asn1crypto pyotp qrcode keyring paramiko fabric python-gnupg certifi cffi \
+    itsdangerous asn1crypto pyotp qrcode keyring paramiko fabric python-gnupg certifi cffi \
     truststore certvalidator oscrypto tls-parser sslscan sslyze tlslite-ng scrypt jwcrypto secrets-manager \
     shapely geopandas folium pyproj fiona rasterio geopy \
     boto3 google-cloud-storage python-dotenv python-multipart jinja2 mako markdown python-markdown-math celery dramatiq apscheduler watchdog luigi prefect \
