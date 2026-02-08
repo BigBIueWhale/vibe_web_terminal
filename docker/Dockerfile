@@ -837,6 +837,7 @@ RUN python3 -c "import nltk; nltk.download('punkt'); nltk.download('punkt_tab');
 # This pre-downloads browser binaries so they work offline
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN playwright install --with-deps chromium firefox && \
+    npx playwright install chromium firefox && \
     chmod -R a+rX /opt/playwright-browsers
 
 # Puppeteer: skip its own Chromium download, reuse Playwright's (~400 MB saved)

@@ -21,7 +21,7 @@ This environment has hundreds of pre-installed tools and libraries. **Never clai
 
 You can accomplish far more than basic code editing:
 
-- **Scrape and automate the web**: Playwright and Puppeteer with real Chromium/Firefox browsers are installed. Use them for scraping, screenshots, PDF generation, form automation, and testing.
+- **Scrape and automate the web**: Playwright and Puppeteer with real Chromium/Firefox browsers are pre-installed (no need to run `npx playwright install`). Use them for scraping, screenshots, PDF generation, form automation, and testing.
 - **Process any document**: Extract text from PDFs (pdfplumber, PyMuPDF), OCR images and scans (tesseract with English/Hebrew/Arabic/Russian/European languages, easyocr), convert between formats (pandoc, LibreOffice), render markdown to PDF (md-to-pdf, weasyprint).
 - **Analyze and transform data**: Full data science stack with pandas, polars, numpy, scipy. Visualize with matplotlib, seaborn, plotly. ML with pytorch, transformers, scikit-learn.
 - **Handle media**: Process images (Pillow, opencv, imagemagick), video/audio (ffmpeg, moviepy), extract metadata (exiftool, mediainfo).
