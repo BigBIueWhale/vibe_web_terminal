@@ -17,22 +17,55 @@ The tradeoff is explicit: **spend N times the compute, get N times the depth.**
 ## The Primitive
 
 ```python
-agent_run(instructions: str) -> str
+agent_run(instructions: str) -> Path
 ```
 
-Launches a full autonomous read-only agent session. The agent has access to the workspace (file read, search, grep, glob, etc.) and will explore on its own. Returns the agent's written report.
-
-`instructions` contains:
-- The user's original query (what are we researching?)
-- The specific research question for this agent (what should YOU focus on?)
-- Output from previous-phase agents, if any (what did earlier agents find?)
+Launches a full autonomous read-only agent session. The agent has access to the workspace (file read, search, grep, glob, etc.) and will explore on its own. Writes its report to a file and **returns the file path.**
 
 **Parallelism helper:**
 ```python
-parallel_runs(instructions: list[str]) -> list[str]
+parallel_runs(instructions: list[str]) -> list[Path]
 ```
 
 That's it. Everything else is just Python.
+
+---
+
+## Context Delivery: Inline vs File Reference
+
+Agent outputs are files. When passing context from one phase to the next, the orchestrator chooses **per-context** how to deliver it:
+
+**Inline** — read the file, embed the text directly in the prompt:
+```python
+framework_path = agent_run(...)
+# Small output from 1 agent — inline it
+instructions = f"""
+    CLASSIFICATION FRAMEWORK:
+    {framework_path.read_text()}
+"""
+```
+
+**File reference** — just give the filename, the agent reads it itself:
+```python
+result_paths = parallel_runs(...)  # 110 reports
+# Large output from N agents — give filenames, agent reads them
+instructions = f"""
+    CLASSIFICATION RESULTS: Read the {len(result_paths)} report files:
+    {chr(10).join(str(p) for p in result_paths)}
+"""
+```
+
+**When to use which:**
+
+| Context | Delivery | Why |
+|---|---|---|
+| Framework from 1 agent | **Inline** | Small, agent needs it immediately to understand its task |
+| Orientation/map from 1 agent | **Inline** | Small, provides essential framing |
+| N reports from parallel agents | **File ref** | Too large to inline; agent reads what it needs |
+| Aggregated results for audit | **File ref** | Could be massive; agent can search/scan selectively |
+| User's original query | **Inline** | Always small, always essential |
+
+The rule of thumb: **inline what's small and essential to framing the task. File-reference what's large or what the agent might only need to selectively read.**
 
 ---
 
@@ -52,7 +85,7 @@ Decision fatigue after ~30 items. Keyword-matching replaces thinking. Internal i
 def classify(user_query: str):
 
     # Phase 1: One agent explores the data and defines the classification framework
-    framework = agent_run(f"""
+    framework_path = agent_run(f"""
         USER'S QUERY: {user_query}
 
         You have access to the workspace. Find and read the dataset.
@@ -62,14 +95,14 @@ def classify(user_query: str):
     """)
 
     # Phase 2: N parallel agents, each classifying ONE item
-    # Each agent explores the dataset independently but focuses on ONE item
-    items = extract_item_ids(framework)  # parse item IDs from the framework report
-    results = parallel_runs([
+    # Framework is inlined (small, essential). Each agent explores the dataset on its own.
+    items = extract_item_ids(framework_path)
+    result_paths = parallel_runs([
         f"""
         USER'S QUERY: {user_query}
 
         CLASSIFICATION FRAMEWORK (from a previous research agent):
-        {framework}
+        {framework_path.read_text()}
 
         YOUR TASK: Focus on item {item_id}. Find it in the dataset, read it,
         and classify it. Use the framework above. You have access to the full
@@ -80,25 +113,27 @@ def classify(user_query: str):
     ])
 
     # Phase 3: One audit agent checks everything for consistency
-    audit = agent_run(f"""
+    # Framework inlined (small). 110 classification reports passed as file references (large).
+    audit_path = agent_run(f"""
         USER'S QUERY: {user_query}
 
         CLASSIFICATION FRAMEWORK:
-        {framework}
+        {framework_path.read_text()}
 
-        CLASSIFICATION RESULTS (from {len(items)} parallel research agents):
-        {format_results(items, results)}
+        CLASSIFICATION RESULTS: {len(result_paths)} parallel agents each classified
+        one item. Read their reports:
+        {chr(10).join(str(p) for p in result_paths)}
 
-        YOUR TASK: You have access to the original dataset — go read it.
-        Find items with similar wording that were classified differently.
-        Find items that seem miscategorized. Flag systematic errors.
+        YOUR TASK: Read the classification reports above, then go read the
+        original dataset. Find items with similar wording that were classified
+        differently. Find items that seem miscategorized. Flag systematic errors.
         Propose corrections with reasoning.
     """)
 
-    return format_results(items, results) + "\n\n--- AUDIT ---\n" + audit
+    return audit_path
 ```
 
-**Cost: 1 + N + 1 agent runs. Every classification decision gets a dedicated agent that can explore the full dataset.**
+**Cost: 1 + N + 1 agent runs. Framework inlined to every worker (small, essential). 110 results passed as files to the auditor (large, selectively read).**
 
 ---
 
@@ -120,7 +155,7 @@ Even an autonomous agent loses focus over a large codebase. It skims later files
 def codebase_analysis(user_query: str):
 
     # Phase 1: Orientation — one agent maps the territory
-    orientation = agent_run(f"""
+    orientation_path = agent_run(f"""
         USER'S QUERY: {user_query}
 
         Explore the entire codebase. Produce a structural map:
@@ -133,14 +168,14 @@ def codebase_analysis(user_query: str):
     """)
 
     # Phase 2: N parallel deep-dive agents, one per file
-    # Each agent can explore the FULL codebase but is directed to focus on one file
-    files = extract_file_list(orientation)  # parse file paths from orientation report
-    deep_dives = parallel_runs([
+    # Orientation inlined (small, essential framing for where to look)
+    files = extract_file_list(orientation_path)
+    deep_dive_paths = parallel_runs([
         f"""
         USER'S QUERY: {user_query}
 
         CODEBASE MAP (from a previous research agent):
-        {orientation}
+        {orientation_path.read_text()}
 
         YOUR TASK: Focus your investigation on: {filename}
         Read this file thoroughly. Then trace how it connects to the rest of
@@ -151,26 +186,28 @@ def codebase_analysis(user_query: str):
         for filename in files
     ])
 
-    # Phase 3: Synthesis — one agent integrates all findings
-    synthesis = agent_run(f"""
+    # Phase 3: Synthesis
+    # Orientation inlined (small). Deep-dive reports passed as files (large).
+    synthesis_path = agent_run(f"""
         USER'S QUERY: {user_query}
 
         CODEBASE MAP:
-        {orientation}
+        {orientation_path.read_text()}
 
-        DEEP-DIVE REPORTS (from {len(files)} parallel research agents, one per file):
-        {format_results(files, deep_dives)}
+        DEEP-DIVE REPORTS: {len(deep_dive_paths)} parallel agents each investigated
+        one file. Read their reports:
+        {chr(10).join(str(p) for p in deep_dive_paths)}
 
-        YOUR TASK: You have access to the codebase — go verify anything that
-        seems off. Synthesize the deep-dive reports into a complete answer.
+        YOUR TASK: Read the deep-dive reports, then go verify anything that
+        seems off in the actual codebase. Synthesize into a complete answer.
         Identify cross-cutting patterns that span multiple files. Prioritize
         findings by severity/importance. Cite files and lines.
     """)
 
-    return synthesis
+    return synthesis_path
 ```
 
-**Cost: 1 + N_files + 1 agent runs. Every file gets a dedicated agent that can also read any other file to trace cross-file dependencies.**
+**Cost: 1 + N_files + 1 agent runs. Every file gets a dedicated investigator. The synthesis agent reads all reports from disk, can verify in the codebase.**
 
 ---
 
@@ -192,7 +229,7 @@ Attention degrades over long documents. The agent skims later sections. Cross-re
 def document_analysis(user_query: str):
 
     # Phase 1: One agent reads and maps the document's structure
-    structure = agent_run(f"""
+    structure_path = agent_run(f"""
         USER'S QUERY: {user_query}
 
         Find and read the document in the workspace. Produce a structural overview:
@@ -203,13 +240,14 @@ def document_analysis(user_query: str):
     """)
 
     # Phase 2: N parallel agents, each focused on ONE section
-    sections = extract_sections(structure)  # parse section names from structure report
-    section_analyses = parallel_runs([
+    # Structure inlined (small, essential for knowing where your section fits)
+    sections = extract_sections(structure_path)
+    section_paths = parallel_runs([
         f"""
         USER'S QUERY: {user_query}
 
         DOCUMENT STRUCTURE (from a previous research agent):
-        {structure}
+        {structure_path.read_text()}
 
         YOUR TASK: Focus on section: '{section_title}'
         Read this section deeply. You have access to the full document — read
@@ -221,25 +259,26 @@ def document_analysis(user_query: str):
     ])
 
     # Phase 3: Synthesis
-    final = agent_run(f"""
+    # Structure inlined. Section analyses passed as files.
+    final_path = agent_run(f"""
         USER'S QUERY: {user_query}
 
         DOCUMENT STRUCTURE:
-        {structure}
+        {structure_path.read_text()}
 
-        SECTION ANALYSES (from {len(sections)} parallel research agents):
-        {format_results(sections, section_analyses)}
+        SECTION ANALYSES: {len(section_paths)} parallel agents each analyzed
+        one section. Read their reports:
+        {chr(10).join(str(p) for p in section_paths)}
 
-        YOUR TASK: You have access to the original document — go verify
-        anything that needs it. Synthesize the section analyses into a
-        final answer. Preserve specific details. Identify cross-section
-        patterns. Structure your answer clearly.
+        YOUR TASK: Read the section analyses, then go verify in the original
+        document as needed. Synthesize into a final answer. Preserve specific
+        details. Identify cross-section patterns. Structure your answer clearly.
     """)
 
-    return final
+    return final_path
 ```
 
-**Cost: 1 + N_sections + 1 agent runs. Every section gets deep analysis from an agent that can also read the rest of the document.**
+**Cost: 1 + N_sections + 1 agent runs. Every section gets a dedicated analyst. Synthesis agent reads all section reports from disk.**
 
 ---
 
@@ -260,7 +299,7 @@ Recency bias — the agent favors whatever it read last. Inconsistent criteria a
 def comparative_eval(user_query: str):
 
     # Phase 1: One agent surveys all items and defines evaluation criteria
-    criteria = agent_run(f"""
+    criteria_path = agent_run(f"""
         USER'S QUERY: {user_query}
 
         Find and read all items to be compared in the workspace.
@@ -271,13 +310,14 @@ def comparative_eval(user_query: str):
     """)
 
     # Phase 2: N parallel agents, each deeply evaluating ONE item
-    items = extract_item_names(criteria)  # parse from criteria report
-    evaluations = parallel_runs([
+    # Criteria inlined (small, essential for consistent scoring)
+    items = extract_item_names(criteria_path)
+    eval_paths = parallel_runs([
         f"""
         USER'S QUERY: {user_query}
 
         EVALUATION CRITERIA (from a previous research agent):
-        {criteria}
+        {criteria_path.read_text()}
 
         YOUR TASK: Focus your evaluation on: {item_name}
         Read it thoroughly. You can also read the other items for
@@ -288,25 +328,27 @@ def comparative_eval(user_query: str):
     ])
 
     # Phase 3: Cross-comparison and recommendation
-    recommendation = agent_run(f"""
+    # Criteria inlined. Individual evaluations passed as files.
+    recommendation_path = agent_run(f"""
         USER'S QUERY: {user_query}
 
         EVALUATION CRITERIA:
-        {criteria}
+        {criteria_path.read_text()}
 
-        INDIVIDUAL EVALUATIONS (from {len(items)} parallel research agents):
-        {format_results(items, evaluations)}
+        INDIVIDUAL EVALUATIONS: {len(eval_paths)} parallel agents each evaluated
+        one item. Read their reports:
+        {chr(10).join(str(p) for p in eval_paths)}
 
-        YOUR TASK: Build a comparison matrix. Identify where items differ
-        most. Check for scoring inconsistencies — go read the original
-        items if something seems off. Make a final recommendation with
-        the top 3 reasons. Acknowledge the runner-up.
+        YOUR TASK: Read the evaluation reports. Build a comparison matrix.
+        Identify where items differ most. Check for scoring inconsistencies —
+        go read the original items if something seems off. Make a final
+        recommendation with the top 3 reasons. Acknowledge the runner-up.
     """)
 
-    return recommendation
+    return recommendation_path
 ```
 
-**Cost: 1 + N_items + 1 agent runs. Each item gets a dedicated evaluator who can also inspect the competition. No recency bias.**
+**Cost: 1 + N_items + 1 agent runs. Each evaluator gets criteria inlined for consistency. Final agent reads all evaluations from disk.**
 
 ---
 
@@ -327,7 +369,7 @@ Attention spread thin across many records. Inconsistent rule application. Misses
 def data_validation(user_query: str):
 
     # Phase 1: One agent explores the dataset and defines validation rules
-    rules = agent_run(f"""
+    rules_path = agent_run(f"""
         USER'S QUERY: {user_query}
 
         Find and read the dataset in the workspace. Examine it fully. Define
@@ -339,13 +381,14 @@ def data_validation(user_query: str):
     """)
 
     # Phase 2: N parallel agents, each scrutinizing ONE record
-    records = extract_record_ids(rules)  # parse from rules report
-    validations = parallel_runs([
+    # Rules inlined (small, essential for consistent validation)
+    records = extract_record_ids(rules_path)
+    validation_paths = parallel_runs([
         f"""
         USER'S QUERY: {user_query}
 
         VALIDATION RULES (from a previous research agent):
-        {rules}
+        {rules_path.read_text()}
 
         YOUR TASK: Focus on record: {record_id}
         Find and read this record. You have access to the full dataset —
@@ -357,25 +400,27 @@ def data_validation(user_query: str):
     ])
 
     # Phase 3: Pattern analysis across all validations
-    patterns = agent_run(f"""
+    # Rules inlined. Validation reports passed as files.
+    patterns_path = agent_run(f"""
         USER'S QUERY: {user_query}
 
         VALIDATION RULES:
-        {rules}
+        {rules_path.read_text()}
 
-        VALIDATION RESULTS (from {len(records)} parallel research agents):
-        {format_results(records, validations)}
+        VALIDATION RESULTS: {len(validation_paths)} parallel agents each validated
+        one record. Read their reports:
+        {chr(10).join(str(p) for p in validation_paths)}
 
-        YOUR TASK: Go read the original dataset to verify patterns. Look
-        for SYSTEMATIC issues — failures clustered by source, date, or
-        category. Records individually valid but collectively impossible.
-        Top 3 most critical findings.
+        YOUR TASK: Read the validation reports, then go read the original
+        dataset to verify patterns. Look for SYSTEMATIC issues — failures
+        clustered by source, date, or category. Records individually valid
+        but collectively impossible. Top 3 most critical findings.
     """)
 
-    return patterns
+    return patterns_path
 ```
 
-**Cost: 1 + N_records + 1 agent runs. Each record gets a dedicated agent who can compare against the full dataset.**
+**Cost: 1 + N_records + 1 agent runs. Rules inlined to every validator for consistency. All validation reports passed as files to pattern analyzer.**
 
 ---
 
@@ -396,7 +441,7 @@ Anchors on the first plausible explanation. Stops exploring once it has "an answ
 def investigate(user_query: str):
 
     # Phase 1: One agent explores everything and generates hypotheses
-    hypotheses_report = agent_run(f"""
+    hypotheses_path = agent_run(f"""
         USER'S QUERY: {user_query}
 
         Explore the workspace — read code, config, logs, anything relevant.
@@ -408,10 +453,15 @@ def investigate(user_query: str):
     """)
 
     # Phase 2: N parallel agents, each evaluating ONE hypothesis
-    hypotheses = parse_hypotheses(hypotheses_report)
-    evaluations = parallel_runs([
+    # Hypotheses report inlined (small, and each agent needs to see
+    # its own hypothesis plus the others for context)
+    hypotheses = parse_hypotheses(hypotheses_path)
+    eval_paths = parallel_runs([
         f"""
         USER'S QUERY: {user_query}
+
+        ALL HYPOTHESES (from a previous research agent):
+        {hypotheses_path.read_text()}
 
         YOUR TASK: Evaluate this ONE hypothesis: {hypothesis}
 
@@ -426,21 +476,27 @@ def investigate(user_query: str):
     ])
 
     # Phase 3: Diagnosis — weigh all evaluations
-    diagnosis = agent_run(f"""
+    # Hypotheses inlined (small). Evaluation reports passed as files.
+    diagnosis_path = agent_run(f"""
         USER'S QUERY: {user_query}
 
-        HYPOTHESIS EVALUATIONS (from {len(hypotheses)} parallel research agents):
-        {format_results(hypotheses, evaluations)}
+        HYPOTHESES:
+        {hypotheses_path.read_text()}
 
-        YOUR TASK: Go verify the strongest findings in the codebase yourself.
-        Which hypothesis has the strongest evidence? Could multiple be true
-        simultaneously? Recommend a specific fix with concrete steps.
+        HYPOTHESIS EVALUATIONS: {len(eval_paths)} parallel agents each investigated
+        one hypothesis. Read their reports:
+        {chr(10).join(str(p) for p in eval_paths)}
+
+        YOUR TASK: Read the evaluation reports. Go verify the strongest
+        findings in the codebase yourself. Which hypothesis has the strongest
+        evidence? Could multiple be true simultaneously? Recommend a specific
+        fix with concrete steps.
     """)
 
-    return diagnosis
+    return diagnosis_path
 ```
 
-**Cost: 1 + N_hypotheses + 1 agent runs. Each hypothesis gets an independent investigator who explores the full workspace without anchoring bias.**
+**Cost: 1 + N_hypotheses + 1 agent runs. Each investigator explores independently. Diagnosis agent reads all evaluation reports from disk and verifies.**
 
 ---
 
@@ -451,18 +507,20 @@ Every pipeline follows the same structure:
 ```
 Phase 1: ORIENT     — one agent explores the workspace, builds a framework/map
 Phase 2: DEEP-DIVE  — N parallel agents, each explores independently, each answers ONE question
-Phase 3: SYNTHESIZE  — one agent receives all reports, verifies in the workspace, produces final answer
+Phase 3: SYNTHESIZE  — one agent reads all reports, verifies in the workspace, produces final answer
 ```
 
 Key principles:
 
 1. **Agents explore, they aren't fed.** No data loading, no file concatenation, no chunking. Each agent is an autonomous session with full workspace access. It finds what it needs.
 
-2. **Only reports flow between phases.** The orchestration layer passes exactly one thing between phases: the text output of previous agents. An orientation report. A classification framework. A set of hypotheses. That's the only "context" — everything else the agent discovers on its own.
+2. **Only reports flow between phases.** The orchestration layer passes exactly one thing between phases: the file output of previous agents. An orientation report. A classification framework. A set of hypotheses.
 
-3. **Pipelines are task types, not scripts.** Each pipeline accepts the user's query as input. The same `codebase_analysis()` handles security reviews, bug hunts, and architecture questions. The user's query shapes the questions; the pipeline shapes the workflow.
+3. **Context delivery is a choice.** Small, essential framing (a framework, a set of criteria) is inlined in the prompt — the agent has it immediately. Large bodies of work (N parallel reports) are passed as file references — the agent reads them from disk, selectively if needed. This keeps prompts focused while allowing massive volumes of prior-agent output.
 
-4. **Compute is the currency.** Each agent run costs real time and resources. The return is depth and accuracy that a single run cannot achieve — the same way a team of specialists outperforms one generalist, even though the team costs more.
+4. **Pipelines are task types, not scripts.** Each pipeline accepts the user's query as input. The same `codebase_analysis()` handles security reviews, bug hunts, and architecture questions. The user's query shapes the questions; the pipeline shapes the workflow.
+
+5. **Compute is the currency.** Each agent run costs real time and resources. The return is depth and accuracy that a single run cannot achieve — the same way a team of specialists outperforms one generalist, even though the team costs more.
 
 ## When NOT to Use This
 
