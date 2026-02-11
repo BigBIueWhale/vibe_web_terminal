@@ -2,11 +2,13 @@
 
 ## The Core Idea
 
-A single LLM call on a complex task produces lazy, shallow results. The model skims, takes shortcuts, loses focus halfway through.
+A single agent run on a complex task produces lazy, shallow results. The agent skims, takes shortcuts, loses focus halfway through.
 
-The fix: **N focused agents, each seeing everything, each answering one specific question.**
+The fix: **N autonomous agent runs, each exploring the same workspace, each answering one specific research question.**
 
-Every agent gets the full contents — the entire codebase, the entire document, all the data. Nothing is pre-filtered, chunked, or extracted. The only thing that differs between agents is the **research question** they're instructed to answer. This means each agent can follow references, discover cross-cutting concerns, and trace connections that a snippet-fed agent would miss.
+Each agent run is a full autonomous session — it can read files, search code, explore the filesystem, follow references. You don't feed it content. You give it a question and it **goes and finds things on its own.** The only additional input an agent receives (beyond what it discovers through its own tools) is **the output from previous-phase agents** — an orientation report, a classification framework, a set of hypotheses.
+
+The orchestration layer does no data loading, no file reading, no chunking. It just routes questions and passes reports between phases.
 
 The tradeoff is explicit: **spend N times the compute, get N times the depth.**
 
@@ -15,18 +17,19 @@ The tradeoff is explicit: **spend N times the compute, get N times the depth.**
 ## The Primitive
 
 ```python
-agent_report(question: str, material: str, briefing: str) -> str
+agent_run(instructions: str) -> str
 ```
 
-- `question` — the specific research question this agent must answer
-- `material` — the full, unabridged content (entire codebase, full document, all records)
-- `briefing` — orientation context: what we're researching, why, what the user asked, what the material is
+Launches a full autonomous read-only agent session. The agent has access to the workspace (file read, search, grep, glob, etc.) and will explore on its own. Returns the agent's written report.
 
-Every agent receives the same `material` and `briefing`. Only the `question` changes.
+`instructions` contains:
+- The user's original query (what are we researching?)
+- The specific research question for this agent (what should YOU focus on?)
+- Output from previous-phase agents, if any (what did earlier agents find?)
 
 **Parallelism helper:**
 ```python
-parallel_reports(questions: list[str], material: str, briefing: str) -> list[str]
+parallel_runs(instructions: list[str]) -> list[str]
 ```
 
 That's it. Everything else is just Python.
@@ -40,66 +43,62 @@ That's it. Everything else is just Python.
 **Example invocation:**
 > `classify("Classify these 110 safety requirements into 9 system functions with reasoning")`
 
-**Why a single LLM call fails:**
+**Why a single agent run fails:**
 Decision fatigue after ~30 items. Keyword-matching replaces thinking. Internal inconsistencies. Boundary collapse between similar categories.
 
 **The pipeline:**
 
 ```python
 def classify(user_query: str):
-    # Load the full dataset — every agent will see ALL of it
-    material = load_material()  # e.g., read the CSV, the spec, everything
 
-    briefing = f"""
-    USER'S RESEARCH QUESTION: {user_query}
+    # Phase 1: One agent explores the data and defines the classification framework
+    framework = agent_run(f"""
+        USER'S QUERY: {user_query}
 
-    WHAT YOU'RE LOOKING AT: A dataset of items that need classification.
-    The full dataset is provided below so you can see patterns, compare
-    similar items, and understand the overall structure.
-    """
-
-    # Phase 1: One agent defines the classification framework
-    framework = agent_report(
-        question=(
-            "Read the entire dataset. Define clear boundaries for each category. "
-            "For ambiguous boundaries, state what goes WHERE and WHY. "
-            "Give 2-3 examples per category from the actual data."
-        ),
-        material=material,
-        briefing=briefing,
-    )
+        You have access to the workspace. Find and read the dataset.
+        Explore it fully. Then define clear boundaries for each category.
+        For ambiguous boundaries, state what goes WHERE and WHY.
+        Give 2-3 examples per category from the actual data.
+    """)
 
     # Phase 2: N parallel agents, each classifying ONE item
-    # Each agent sees the FULL dataset (for comparison) but is asked about ONE item
-    items = extract_item_ids(material)
-    results = parallel_reports(
-        questions=[
-            f"Focus on item: {item_id}\n"
-            f"Classify this ONE item. You can see the full dataset — use other items "
-            f"as reference points. Explain your reasoning. Flag if this item is a "
-            f"borderline case and what the runner-up category would be."
-            for item_id in items
-        ],
-        material=material,
-        briefing=briefing + f"\n\nCLASSIFICATION FRAMEWORK:\n{framework}",
-    )
+    # Each agent explores the dataset independently but focuses on ONE item
+    items = extract_item_ids(framework)  # parse item IDs from the framework report
+    results = parallel_runs([
+        f"""
+        USER'S QUERY: {user_query}
+
+        CLASSIFICATION FRAMEWORK (from a previous research agent):
+        {framework}
+
+        YOUR TASK: Focus on item {item_id}. Find it in the dataset, read it,
+        and classify it. Use the framework above. You have access to the full
+        dataset — read other items if you need reference points. Explain your
+        reasoning. Flag if this is a borderline case.
+        """
+        for item_id in items
+    ])
 
     # Phase 3: One audit agent checks everything for consistency
-    audit = agent_report(
-        question=(
-            "Review all classification results below. Find items with similar "
-            "wording that were classified differently. Find items that seem "
-            "miscategorized. Flag systematic errors. Propose corrections.\n\n"
-            + format_results(items, results)
-        ),
-        material=material,
-        briefing=briefing + f"\n\nCLASSIFICATION FRAMEWORK:\n{framework}",
-    )
+    audit = agent_run(f"""
+        USER'S QUERY: {user_query}
+
+        CLASSIFICATION FRAMEWORK:
+        {framework}
+
+        CLASSIFICATION RESULTS (from {len(items)} parallel research agents):
+        {format_results(items, results)}
+
+        YOUR TASK: You have access to the original dataset — go read it.
+        Find items with similar wording that were classified differently.
+        Find items that seem miscategorized. Flag systematic errors.
+        Propose corrections with reasoning.
+    """)
 
     return format_results(items, results) + "\n\n--- AUDIT ---\n" + audit
 ```
 
-**Compute: 1 + N + 1. Every classification decision is made by an agent that can see all the other items for comparison.**
+**Cost: 1 + N + 1 agent runs. Every classification decision gets a dedicated agent that can explore the full dataset.**
 
 ---
 
@@ -112,71 +111,66 @@ def classify(user_query: str):
 > `codebase_analysis("Where is the rate limiting logic and does it have bypass vulnerabilities?")`
 > `codebase_analysis("Users report login fails intermittently. Find the root cause.")`
 
-**Why a single LLM call fails:**
-Can't fit all files. Skims later files. Misses cross-file data flows. Gives generic advice instead of specific findings.
+**Why a single agent run fails:**
+Even an autonomous agent loses focus over a large codebase. It skims later files. Anchors on the first thing it finds. Misses cross-file data flows because it stops exploring too early.
 
 **The pipeline:**
 
 ```python
 def codebase_analysis(user_query: str):
-    # Load EVERYTHING — every agent sees the full codebase
-    material = load_all_source_files()  # concatenated, with file headers
-
-    briefing = f"""
-    USER'S RESEARCH QUESTION: {user_query}
-
-    WHAT YOU'RE LOOKING AT: The complete source code of a software project.
-    Every source file is included below. You have full visibility into the
-    architecture, data flow, dependencies, and configuration.
-    """
 
     # Phase 1: Orientation — one agent maps the territory
-    orientation = agent_report(
-        question=(
-            "Survey the entire codebase. Produce a structural map:\n"
-            "- What does this project do?\n"
-            "- What are the major components/modules?\n"
-            "- What are the entry points?\n"
-            "- What are the key data flows?\n"
-            "- Which files are most relevant to the user's query?"
-        ),
-        material=material,
-        briefing=briefing,
-    )
+    orientation = agent_run(f"""
+        USER'S QUERY: {user_query}
 
-    # Phase 2: N parallel deep-dive agents
-    # Each agent sees the FULL codebase but investigates ONE specific angle
-    files = extract_file_names(material)
-    deep_dives = parallel_reports(
-        questions=[
-            f"Focus your investigation on: {filename}\n"
-            f"You have the complete codebase — use other files to understand "
-            f"how data flows into and out of this file. Answer the user's "
-            f"question specifically as it relates to this file. Trace any "
-            f"cross-file dependencies you find. Cite specific line references."
-            for filename in files
-        ],
-        material=material,
-        briefing=briefing + f"\n\nCODEBASE MAP:\n{orientation}",
-    )
+        Explore the entire codebase. Produce a structural map:
+        - What does this project do?
+        - What are the major components/modules?
+        - What are the entry points?
+        - What are the key data flows?
+        - List every source file you find and its purpose.
+        - Which files are most relevant to the user's query and why?
+    """)
 
-    # Phase 3: Synthesis — one agent with all deep-dive results
-    synthesis = agent_report(
-        question=(
-            "You have the individual file analyses below. Now answer the "
-            "user's question with a complete, cross-cutting analysis. "
-            "Identify patterns that span multiple files. Prioritize findings "
-            "by severity/importance. Be specific — cite files and lines.\n\n"
-            + format_results(files, deep_dives)
-        ),
-        material=material,
-        briefing=briefing + f"\n\nCODEBASE MAP:\n{orientation}",
-    )
+    # Phase 2: N parallel deep-dive agents, one per file
+    # Each agent can explore the FULL codebase but is directed to focus on one file
+    files = extract_file_list(orientation)  # parse file paths from orientation report
+    deep_dives = parallel_runs([
+        f"""
+        USER'S QUERY: {user_query}
+
+        CODEBASE MAP (from a previous research agent):
+        {orientation}
+
+        YOUR TASK: Focus your investigation on: {filename}
+        Read this file thoroughly. Then trace how it connects to the rest of
+        the codebase — read other files as needed to understand data flow in
+        and out. Answer the user's query specifically as it relates to this
+        file. Cite specific line numbers and code.
+        """
+        for filename in files
+    ])
+
+    # Phase 3: Synthesis — one agent integrates all findings
+    synthesis = agent_run(f"""
+        USER'S QUERY: {user_query}
+
+        CODEBASE MAP:
+        {orientation}
+
+        DEEP-DIVE REPORTS (from {len(files)} parallel research agents, one per file):
+        {format_results(files, deep_dives)}
+
+        YOUR TASK: You have access to the codebase — go verify anything that
+        seems off. Synthesize the deep-dive reports into a complete answer.
+        Identify cross-cutting patterns that span multiple files. Prioritize
+        findings by severity/importance. Cite files and lines.
+    """)
 
     return synthesis
 ```
 
-**Compute: 1 + N_files + 1. Every file gets an agent's full attention AND that agent can see all the other files for cross-referencing.**
+**Cost: 1 + N_files + 1 agent runs. Every file gets a dedicated agent that can also read any other file to trace cross-file dependencies.**
 
 ---
 
@@ -189,72 +183,63 @@ def codebase_analysis(user_query: str):
 > `document_analysis("What are the key risk factors mentioned across all sections?")`
 > `document_analysis("Does this contract contain any unusual liability clauses?")`
 
-**Why a single LLM call fails:**
-Document exceeds context window. Even if it fits, attention degrades over long inputs. The model skims later sections. Details are lost.
+**Why a single agent run fails:**
+Attention degrades over long documents. The agent skims later sections. Cross-references are missed. Details are lost.
 
 **The pipeline:**
 
 ```python
 def document_analysis(user_query: str):
-    # Load the full document — every agent sees ALL of it
-    material = load_document()
 
-    # Identify natural sections (chapters, headings, etc.)
-    sections = identify_sections(material)
+    # Phase 1: One agent reads and maps the document's structure
+    structure = agent_run(f"""
+        USER'S QUERY: {user_query}
 
-    briefing = f"""
-    USER'S RESEARCH QUESTION: {user_query}
-
-    WHAT YOU'RE LOOKING AT: A complete document with {len(sections)} sections.
-    The full text is provided below. You can see the entire document to
-    understand context, cross-references, and how sections relate to each other.
-    """
-
-    # Phase 1: One agent reads the whole thing and maps its structure
-    structure = agent_report(
-        question=(
-            "Read the entire document. Produce a structural overview:\n"
-            "- What is this document about?\n"
-            "- What are the major sections and what does each cover?\n"
-            "- What are the key themes that span multiple sections?\n"
-            "- Which sections are most relevant to the user's query?"
-        ),
-        material=material,
-        briefing=briefing,
-    )
+        Find and read the document in the workspace. Produce a structural overview:
+        - What is this document about?
+        - What are the major sections and what does each cover?
+        - What are the key themes that span multiple sections?
+        - Which sections are most relevant to the user's query?
+    """)
 
     # Phase 2: N parallel agents, each focused on ONE section
-    # Each agent sees the FULL document but deeply analyzes one section
-    section_analyses = parallel_reports(
-        questions=[
-            f"Focus your analysis on section: '{section_title}'\n"
-            f"You have the full document for context, but deeply analyze this "
-            f"section in relation to the user's query. Extract specific facts, "
-            f"numbers, dates, names, conclusions. Note any references to or "
-            f"from other sections."
-            for section_title in sections
-        ],
-        material=material,
-        briefing=briefing + f"\n\nDOCUMENT STRUCTURE:\n{structure}",
-    )
+    sections = extract_sections(structure)  # parse section names from structure report
+    section_analyses = parallel_runs([
+        f"""
+        USER'S QUERY: {user_query}
 
-    # Phase 3: Synthesis — one agent assembles the final answer
-    final = agent_report(
-        question=(
-            "Using the section analyses below, produce the final answer to "
-            "the user's query. Preserve specific details (numbers, dates, "
-            "names). Identify cross-section patterns. Structure your answer "
-            "clearly.\n\n"
-            + format_results(sections, section_analyses)
-        ),
-        material=material,
-        briefing=briefing + f"\n\nDOCUMENT STRUCTURE:\n{structure}",
-    )
+        DOCUMENT STRUCTURE (from a previous research agent):
+        {structure}
+
+        YOUR TASK: Focus on section: '{section_title}'
+        Read this section deeply. You have access to the full document — read
+        other sections if you need to follow cross-references. Extract specific
+        facts, numbers, dates, names, conclusions. Answer the user's query as
+        it relates to this section.
+        """
+        for section_title in sections
+    ])
+
+    # Phase 3: Synthesis
+    final = agent_run(f"""
+        USER'S QUERY: {user_query}
+
+        DOCUMENT STRUCTURE:
+        {structure}
+
+        SECTION ANALYSES (from {len(sections)} parallel research agents):
+        {format_results(sections, section_analyses)}
+
+        YOUR TASK: You have access to the original document — go verify
+        anything that needs it. Synthesize the section analyses into a
+        final answer. Preserve specific details. Identify cross-section
+        patterns. Structure your answer clearly.
+    """)
 
     return final
 ```
 
-**Compute: 1 + N_sections + 1. Every section gets deep analysis from an agent that can see the full document for context.**
+**Cost: 1 + N_sections + 1 agent runs. Every section gets deep analysis from an agent that can also read the rest of the document.**
 
 ---
 
@@ -266,70 +251,62 @@ def document_analysis(user_query: str):
 > `comparative_eval("Compare these 4 vendor proposals and recommend one")`
 > `comparative_eval("Which of these 3 architectural approaches is best for our scale?")`
 
-**Why a single LLM call fails:**
-Recency bias (favors the last item read). Loses details from earlier items. Makes superficial comparisons. Inconsistent criteria application.
+**Why a single agent run fails:**
+Recency bias — the agent favors whatever it read last. Inconsistent criteria application across items. Superficial comparisons.
 
 **The pipeline:**
 
 ```python
 def comparative_eval(user_query: str):
-    # Load ALL items — every agent sees everything
-    material = load_all_items()  # all proposals, designs, options, etc.
 
-    items = extract_item_names(material)
+    # Phase 1: One agent surveys all items and defines evaluation criteria
+    criteria = agent_run(f"""
+        USER'S QUERY: {user_query}
 
-    briefing = f"""
-    USER'S RESEARCH QUESTION: {user_query}
-
-    WHAT YOU'RE LOOKING AT: {len(items)} items to compare: {', '.join(items)}.
-    All items are provided in full below. You can see every item to make
-    fair, informed comparisons.
-    """
-
-    # Phase 1: One agent defines evaluation criteria
-    criteria = agent_report(
-        question=(
-            "Read all items. Define 8-10 evaluation criteria with weights "
-            "(must sum to 100%). The criteria should be relevant to the "
-            "user's query and fair to all items. For each criterion, define "
-            "what a score of 1, 5, and 10 looks like."
-        ),
-        material=material,
-        briefing=briefing,
-    )
+        Find and read all items to be compared in the workspace.
+        Define 8-10 evaluation criteria with weights (must sum to 100%).
+        The criteria should be relevant to the user's query and fair to
+        all items. For each criterion, define what a score of 1, 5, and
+        10 looks like.
+    """)
 
     # Phase 2: N parallel agents, each deeply evaluating ONE item
-    # Each agent sees ALL items (for fair comparison) but focuses on one
-    evaluations = parallel_reports(
-        questions=[
-            f"Focus your evaluation on: {item_name}\n"
-            f"You can see all items — use the others as reference points for "
-            f"relative scoring. Evaluate this item against every criterion. "
-            f"For each: score (1-10), specific evidence from the item, and "
-            f"how it compares to what the other items offer."
-            for item_name in items
-        ],
-        material=material,
-        briefing=briefing + f"\n\nEVALUATION CRITERIA:\n{criteria}",
-    )
+    items = extract_item_names(criteria)  # parse from criteria report
+    evaluations = parallel_runs([
+        f"""
+        USER'S QUERY: {user_query}
+
+        EVALUATION CRITERIA (from a previous research agent):
+        {criteria}
+
+        YOUR TASK: Focus your evaluation on: {item_name}
+        Read it thoroughly. You can also read the other items for
+        comparison. Evaluate against every criterion — score (1-10),
+        specific evidence, and how it compares to what others offer.
+        """
+        for item_name in items
+    ])
 
     # Phase 3: Cross-comparison and recommendation
-    recommendation = agent_report(
-        question=(
-            "Review all evaluations below. Build a comparison matrix. "
-            "Identify where items differ most. Check for scoring inconsistencies. "
-            "Make a final recommendation with the top 3 reasons. Acknowledge "
-            "the runner-up and why they fell short.\n\n"
-            + format_results(items, evaluations)
-        ),
-        material=material,
-        briefing=briefing + f"\n\nEVALUATION CRITERIA:\n{criteria}",
-    )
+    recommendation = agent_run(f"""
+        USER'S QUERY: {user_query}
+
+        EVALUATION CRITERIA:
+        {criteria}
+
+        INDIVIDUAL EVALUATIONS (from {len(items)} parallel research agents):
+        {format_results(items, evaluations)}
+
+        YOUR TASK: Build a comparison matrix. Identify where items differ
+        most. Check for scoring inconsistencies — go read the original
+        items if something seems off. Make a final recommendation with
+        the top 3 reasons. Acknowledge the runner-up.
+    """)
 
     return recommendation
 ```
 
-**Compute: 1 + N_items + 1. Each item is evaluated by an agent who can see all the others for fair comparison. No recency bias.**
+**Cost: 1 + N_items + 1 agent runs. Each item gets a dedicated evaluator who can also inspect the competition. No recency bias.**
 
 ---
 
@@ -341,71 +318,64 @@ def comparative_eval(user_query: str):
 > `data_validation("Validate these 50 medical records for consistency and flag anomalies")`
 > `data_validation("Check these financial transactions for duplicates and errors")`
 
-**Why a single LLM call fails:**
-Attention spread thin across many records. Misses subtle patterns. Applies rules inconsistently to later records.
+**Why a single agent run fails:**
+Attention spread thin across many records. Inconsistent rule application. Misses subtle patterns in later records.
 
 **The pipeline:**
 
 ```python
 def data_validation(user_query: str):
-    # Load ALL records — every agent sees the full dataset
-    material = load_dataset()
 
-    records = extract_records(material)
+    # Phase 1: One agent explores the dataset and defines validation rules
+    rules = agent_run(f"""
+        USER'S QUERY: {user_query}
 
-    briefing = f"""
-    USER'S RESEARCH QUESTION: {user_query}
-
-    WHAT YOU'RE LOOKING AT: A dataset of {len(records)} records.
-    The complete dataset is provided below. You can see all records to
-    identify patterns, spot outliers, and understand what "normal" looks like.
-    """
-
-    # Phase 1: One agent defines validation rules from the data itself
-    rules = agent_report(
-        question=(
-            "Examine the entire dataset. Define validation rules based on:\n"
-            "- Domain knowledge (what values are plausible?)\n"
-            "- Internal consistency (what fields should agree?)\n"
-            "- Statistical norms (what's typical in this dataset?)\n"
-            "For each rule, state what a violation looks like."
-        ),
-        material=material,
-        briefing=briefing,
-    )
+        Find and read the dataset in the workspace. Examine it fully. Define
+        validation rules based on:
+        - Domain knowledge (what values are plausible?)
+        - Internal consistency (what fields should agree with each other?)
+        - Statistical norms (what's typical in this dataset?)
+        For each rule, state what a violation looks like.
+    """)
 
     # Phase 2: N parallel agents, each scrutinizing ONE record
-    # Each agent sees ALL records (to know what "normal" looks like)
-    validations = parallel_reports(
-        questions=[
-            f"Focus on record: {record_id}\n"
-            f"You have the full dataset — use other records as baselines. "
-            f"Apply every validation rule. For each: PASS/FAIL/SUSPECT. "
-            f"If FAIL or SUSPECT, explain what's wrong and what the expected "
-            f"value should be based on the other records."
-            for record_id in records
-        ],
-        material=material,
-        briefing=briefing + f"\n\nVALIDATION RULES:\n{rules}",
-    )
+    records = extract_record_ids(rules)  # parse from rules report
+    validations = parallel_runs([
+        f"""
+        USER'S QUERY: {user_query}
+
+        VALIDATION RULES (from a previous research agent):
+        {rules}
+
+        YOUR TASK: Focus on record: {record_id}
+        Find and read this record. You have access to the full dataset —
+        read other records as baselines for what "normal" looks like.
+        Apply every validation rule. For each: PASS/FAIL/SUSPECT with
+        evidence and reasoning.
+        """
+        for record_id in records
+    ])
 
     # Phase 3: Pattern analysis across all validations
-    patterns = agent_report(
-        question=(
-            "Review all validation results below. Look for SYSTEMATIC issues:\n"
-            "- Are failures clustered by source, date, or category?\n"
-            "- Are there records that are individually valid but collectively impossible?\n"
-            "- What are the top 3 most critical findings?\n\n"
-            + format_results(records, validations)
-        ),
-        material=material,
-        briefing=briefing + f"\n\nVALIDATION RULES:\n{rules}",
-    )
+    patterns = agent_run(f"""
+        USER'S QUERY: {user_query}
+
+        VALIDATION RULES:
+        {rules}
+
+        VALIDATION RESULTS (from {len(records)} parallel research agents):
+        {format_results(records, validations)}
+
+        YOUR TASK: Go read the original dataset to verify patterns. Look
+        for SYSTEMATIC issues — failures clustered by source, date, or
+        category. Records individually valid but collectively impossible.
+        Top 3 most critical findings.
+    """)
 
     return patterns
 ```
 
-**Compute: 1 + N_records + 1. Each record is validated by an agent who can see the entire dataset for comparison.**
+**Cost: 1 + N_records + 1 agent runs. Each record gets a dedicated agent who can compare against the full dataset.**
 
 ---
 
@@ -417,71 +387,60 @@ def data_validation(user_query: str):
 > `investigate("Users report login fails intermittently. Find the root cause.")`
 > `investigate("Why is the API response time spiking every 30 minutes?")`
 
-**Why a single LLM call fails:**
-Guesses instead of systematically investigating. Anchors on the first plausible explanation. Doesn't evaluate evidence for and against each hypothesis.
+**Why a single agent run fails:**
+Anchors on the first plausible explanation. Stops exploring once it has "an answer." Doesn't systematically evaluate evidence for and against each theory.
 
 **The pipeline:**
 
 ```python
 def investigate(user_query: str):
-    # Load ALL evidence — logs, code, config, everything relevant
-    material = load_all_evidence()
 
-    briefing = f"""
-    USER'S RESEARCH QUESTION: {user_query}
+    # Phase 1: One agent explores everything and generates hypotheses
+    hypotheses_report = agent_run(f"""
+        USER'S QUERY: {user_query}
 
-    WHAT YOU'RE LOOKING AT: All available evidence — source code, configuration
-    files, logs, and any other relevant material. Everything is provided below
-    so you can trace cause and effect across the full system.
-    """
-
-    # Phase 1: One agent generates hypotheses from the full evidence
-    hypotheses_report = agent_report(
-        question=(
-            "Examine all the evidence. Generate 5-7 specific hypotheses that "
-            "could explain the user's issue. For each hypothesis, state:\n"
-            "- What you'd expect to see if it's TRUE\n"
-            "- What you'd expect to see if it's FALSE\n"
-            "- Which specific parts of the evidence to examine"
-        ),
-        material=material,
-        briefing=briefing,
-    )
-
-    hypotheses = parse_hypotheses(hypotheses_report)
+        Explore the workspace — read code, config, logs, anything relevant.
+        Generate 5-7 specific hypotheses that could explain the issue.
+        For each hypothesis, state:
+        - What you'd expect to see in the code/logs if it's TRUE
+        - What you'd expect to see if it's FALSE
+        - Which specific files/areas to examine
+    """)
 
     # Phase 2: N parallel agents, each evaluating ONE hypothesis
-    # Each agent sees ALL evidence but focuses on proving/disproving ONE theory
-    evaluations = parallel_reports(
-        questions=[
-            f"Your job: evaluate this ONE hypothesis: {hypothesis}\n"
-            f"You have ALL the evidence. Systematically examine it:\n"
-            f"- What evidence SUPPORTS this hypothesis? (cite specific lines)\n"
-            f"- What evidence CONTRADICTS it?\n"
-            f"- What evidence is MISSING that would confirm or rule it out?\n"
-            f"- Confidence: HIGH / MEDIUM / LOW with justification"
-            for hypothesis in hypotheses
-        ],
-        material=material,
-        briefing=briefing,
-    )
+    hypotheses = parse_hypotheses(hypotheses_report)
+    evaluations = parallel_runs([
+        f"""
+        USER'S QUERY: {user_query}
+
+        YOUR TASK: Evaluate this ONE hypothesis: {hypothesis}
+
+        Explore the workspace — read code, config, logs, anything relevant.
+        Systematically look for evidence:
+        - What SUPPORTS this hypothesis? (cite specific files and lines)
+        - What CONTRADICTS it?
+        - What's MISSING that would confirm or rule it out?
+        - Confidence: HIGH / MEDIUM / LOW with justification
+        """
+        for hypothesis in hypotheses
+    ])
 
     # Phase 3: Diagnosis — weigh all evaluations
-    diagnosis = agent_report(
-        question=(
-            "Review all hypothesis evaluations below. Which hypothesis has "
-            "the strongest evidence? Could multiple hypotheses be true "
-            "simultaneously? Recommend a specific fix with concrete steps.\n\n"
-            + format_results(hypotheses, evaluations)
-        ),
-        material=material,
-        briefing=briefing,
-    )
+    diagnosis = agent_run(f"""
+        USER'S QUERY: {user_query}
+
+        HYPOTHESIS EVALUATIONS (from {len(hypotheses)} parallel research agents):
+        {format_results(hypotheses, evaluations)}
+
+        YOUR TASK: Go verify the strongest findings in the codebase yourself.
+        Which hypothesis has the strongest evidence? Could multiple be true
+        simultaneously? Recommend a specific fix with concrete steps.
+    """)
 
     return diagnosis
 ```
 
-**Compute: 1 + N_hypotheses + 1. Each hypothesis gets a fair, independent, evidence-based evaluation with full visibility.**
+**Cost: 1 + N_hypotheses + 1 agent runs. Each hypothesis gets an independent investigator who explores the full workspace without anchoring bias.**
 
 ---
 
@@ -490,24 +449,24 @@ def investigate(user_query: str):
 Every pipeline follows the same structure:
 
 ```
-Phase 1: ORIENT     — one agent surveys the full material, builds a framework
-Phase 2: DEEP-DIVE  — N parallel agents, each sees EVERYTHING, each answers ONE question
-Phase 3: SYNTHESIZE  — one agent integrates all findings into a final answer
+Phase 1: ORIENT     — one agent explores the workspace, builds a framework/map
+Phase 2: DEEP-DIVE  — N parallel agents, each explores independently, each answers ONE question
+Phase 3: SYNTHESIZE  — one agent receives all reports, verifies in the workspace, produces final answer
 ```
 
 Key principles:
 
-1. **Full context, narrow focus.** Every agent gets the complete material. The only thing that varies is the question. An agent reviewing `auth.py` can see `session.py` too — and might notice the critical bug is actually in how they interact.
+1. **Agents explore, they aren't fed.** No data loading, no file concatenation, no chunking. Each agent is an autonomous session with full workspace access. It finds what it needs.
 
-2. **Briefing-first.** Every agent is told: what we're researching, why, what the material is, and where things are. No agent starts cold.
+2. **Only reports flow between phases.** The orchestration layer passes exactly one thing between phases: the text output of previous agents. An orientation report. A classification framework. A set of hypotheses. That's the only "context" — everything else the agent discovers on its own.
 
-3. **Pipelines are task types, not scripts.** Each pipeline accepts the user's query as input. The same `codebase_analysis()` pipeline handles security reviews, bug hunts, and architecture questions. The user's query shapes the questions; the pipeline shapes the workflow.
+3. **Pipelines are task types, not scripts.** Each pipeline accepts the user's query as input. The same `codebase_analysis()` handles security reviews, bug hunts, and architecture questions. The user's query shapes the questions; the pipeline shapes the workflow.
 
-4. **Compute is the currency.** Each agent call costs time and tokens. The return is depth and accuracy that a single call cannot achieve — the same way a team of specialists outperforms one generalist, even though the team costs more.
+4. **Compute is the currency.** Each agent run costs real time and resources. The return is depth and accuracy that a single run cannot achieve — the same way a team of specialists outperforms one generalist, even though the team costs more.
 
 ## When NOT to Use This
 
-- Simple questions ("What does this function do?") — one call is fine
+- Simple questions ("What does this function do?") — one agent run is fine
 - Creative tasks with no ground truth ("Write me a poem") — parallelism doesn't help
 - Tasks with <5 items — overhead isn't worth it
 - Real-time / interactive use — latency matters more than accuracy
@@ -515,8 +474,8 @@ Key principles:
 ## When This Dominates
 
 - **N-item classification/review/validation** — eliminates decision fatigue
-- **Large document analysis** — every section gets deep attention with full-document context
-- **Cross-file codebase analysis** — each file gets an agent who can see all files
+- **Large document analysis** — every section gets a dedicated investigator
+- **Cross-file codebase analysis** — each file gets an agent who can also explore the rest
 - **Comparative evaluation** — eliminates recency/order bias
-- **Root-cause investigation** — each hypothesis gets independent, unbiased evaluation
-- **Any task where the LLM takes shortcuts when overwhelmed by volume**
+- **Root-cause investigation** — each hypothesis gets an independent, unbiased investigator
+- **Any task where a single agent takes shortcuts because the job is too big**
