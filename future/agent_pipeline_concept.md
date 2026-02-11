@@ -1,617 +1,185 @@
 # agent_pipeline: Sacrifice Compute for Accuracy
 
-## The Core Idea
+A single agent run on a complex task produces lazy, shallow results. It skims, takes shortcuts, loses focus halfway through. Give it 110 items to classify and it keyword-matches after the first 30.
 
-A single agent run on a complex task produces lazy, shallow results. The agent skims, takes shortcuts, loses focus halfway through.
+The fix: **N autonomous agent runs, each exploring the same workspace, each answering one specific research question.** Each run is a full agent session with workspace access — read files, search, grep, glob. You don't feed it content. You give it a question and it goes and finds things on its own.
 
-The fix: **N autonomous agent runs, each exploring the same workspace, each answering one specific research question.**
-
-Each agent run is a full autonomous session — it can read files, search code, explore the filesystem, follow references. You don't feed it content. You give it a question and it **goes and finds things on its own.** The only additional input an agent receives (beyond what it discovers through its own tools) is **the output from previous-phase agents** — an orientation report, a classification framework, a set of hypotheses.
-
-The orchestration layer does no data loading, no file reading, no chunking. It just routes questions and passes reports between phases.
-
-The tradeoff is explicit: **spend N times the compute, get N times the depth.**
+The tradeoff: **spend N times the compute, get N times the depth.**
 
 ---
 
-## Two Agent Types
+## Two Primitives
 
-### Read-Only Agent (the common type)
-
-```python
-agent_run(instructions: str) -> Path
-```
-
-Launches a full autonomous **read-only** agent session. Can read files, search, grep, glob — but **cannot modify the workspace.** Writes its report to a file and returns the path. This is the agent used in every research, analysis, and synthesis phase.
+**Read-only agent** — the common type. Used for all research, analysis, and synthesis. Cannot modify the workspace.
 
 ```python
+agent_run(instructions: str) -> Path    # returns path to report file
 parallel_runs(instructions: list[str]) -> list[Path]
 ```
 
-### Worker Agent (for file conversion)
+**Worker agent** — for file conversion only. Can read, write, and delete files. Runs once at the start to convert PDFs/Word/Excel into text so research agents can grep and search them.
 
 ```python
 agent_work(instructions: str) -> Path
 ```
 
-Launches a full autonomous **read-write** agent session. Can read, write, delete, and rename files in the workspace. Writes its report to a file and returns the path. **Used only for the conversion phase** at the beginning of pipelines — never for research.
-
-The separation is deliberate. Research agents cannot corrupt the workspace. Only the conversion agent modifies files, and it runs once, before any research begins.
+Context from previous agents is delivered in two ways: **inlined** in the prompt (small, essential framing) or as **file paths** the agent reads itself (large output from N parallel agents).
 
 ---
 
-## Phase 0: File Conversion
+## The Example: Requirement Classification
 
-Most pipelines operate on workspaces that contain files agents need to read — but those files might be PDFs, Word docs, Excel spreadsheets, PowerPoint decks, images with text, or other formats that agents can't grep, search, or easily read.
+> `classify("Classify these 110 safety requirements into the 9 system functions defined in the SRS, with reasoning")`
 
-**Phase 0 converts the workspace into LLM-readable formats.** It runs a single `agent_work()` that:
-
-1. Finds all non-text files in the workspace
-2. Converts each to a high-quality text equivalent (markdown, plain text, CSV)
-3. Deletes the originals
-4. Preserves the directory structure and naming (e.g., `report.pdf` → `report.md`)
-
-```python
-def convert_workspace():
-    """Phase 0: Convert workspace files to LLM-readable formats.
-    Uses a worker agent (read-write). Runs once before any research begins."""
-
-    return agent_work(f"""
-        Survey the workspace. Find all files that are not plain text / code.
-        Convert each to a high-quality LLM-readable format:
-
-        - PDF → Markdown (preserve headings, tables, lists, page numbers as section markers)
-        - Word (.docx) → Markdown (preserve all formatting structure)
-        - Excel (.xlsx) / CSV with complex encoding → clean UTF-8 CSV or Markdown tables
-        - PowerPoint (.pptx) → Markdown (one section per slide, include speaker notes)
-        - Images with text → Markdown (describe visual layout, transcribe all text)
-        - HTML → Markdown
-
-        Rules:
-        - PRESERVE the directory structure. Same folder, same base filename, new extension.
-        - DELETE the original after successful conversion.
-        - If a file is already plain text, code, markdown, or clean CSV — leave it alone.
-        - Write a conversion manifest listing every file converted and its new path.
-        - Prioritize COMPLETENESS over brevity — do not summarize, do not skip sections.
-          The converted file must contain everything the original contained.
-    """)
-```
-
-**Phase 0 is the only phase that uses `agent_work()`.** Every subsequent phase uses `agent_run()` (read-only). After Phase 0, the workspace is fully searchable, greppable, and readable by all research agents.
-
-**When to use Phase 0:**
-
-| Pipeline | Phase 0 needed? | Why |
-|---|---|---|
-| N-Item Classification | **Usually** | Datasets often come as Excel, PDF tables |
-| Codebase Analysis | **No** | Source code is already text |
-| Document Analysis | **Yes** | Documents are typically PDF, Word |
-| Comparative Evaluation | **Yes** | Proposals/designs are typically PDF, Word, PPT |
-| Data Validation | **Usually** | Datasets often come as Excel, proprietary formats |
-| Hypothesis Investigation | **No** | Code, config, and logs are already text |
-
----
-
-## Context Delivery: Inline vs File Reference
-
-Agent outputs are files. When passing context from one phase to the next, the orchestrator chooses **per-context** how to deliver it:
-
-**Inline** — read the file, embed the text directly in the prompt:
-```python
-framework_path = agent_run(...)
-# Small output from 1 agent — inline it
-instructions = f"""
-    CLASSIFICATION FRAMEWORK:
-    {framework_path.read_text()}
-"""
-```
-
-**File reference** — just give the filename, the agent reads it itself:
-```python
-result_paths = parallel_runs(...)  # 110 reports
-# Large output from N agents — give filenames, agent reads them
-instructions = f"""
-    CLASSIFICATION RESULTS: Read the {len(result_paths)} report files:
-    {chr(10).join(str(p) for p in result_paths)}
-"""
-```
-
-**When to use which:**
-
-| Context | Delivery | Why |
-|---|---|---|
-| Framework from 1 agent | **Inline** | Small, agent needs it immediately to understand its task |
-| Orientation/map from 1 agent | **Inline** | Small, provides essential framing |
-| N reports from parallel agents | **File ref** | Too large to inline; agent reads what it needs |
-| Aggregated results for audit | **File ref** | Could be massive; agent can search/scan selectively |
-| User's original query | **Inline** | Always small, always essential |
-
-The rule of thumb: **inline what's small and essential to framing the task. File-reference what's large or what the agent might only need to selectively read.**
-
----
-
-## Pipeline Type 1: N-Item Classification
-
-**Accepts:** a user query about classifying/categorizing a dataset
-
-**Example invocation:**
-> `classify("Classify these 110 safety requirements into 9 system functions with reasoning")`
-
-**Why a single agent run fails:**
-Decision fatigue after ~30 items. Keyword-matching replaces thinking. Internal inconsistencies. Boundary collapse between similar categories.
-
-**The pipeline:**
+**Why a single agent fails:** Decision fatigue after ~30 items. Starts keyword-matching instead of reasoning. Classifies "shall prevent unintended activation" under Activation instead of Protection. Same sentence structure gets different categories depending on where it appears in the list.
 
 ```python
 def classify(user_query: str):
 
-    # Phase 0: Convert workspace files to LLM-readable formats
-    convert_workspace()
+    # ── Phase 0: Convert workspace to text ──────────────────────────
+    agent_work("""
+        Find every file in the workspace that is not already plain text,
+        markdown, CSV, or source code. Convert each to markdown:
 
-    # Phase 1: One agent explores the data and defines the classification framework
-    framework_path = agent_run(f"""
-        USER'S QUERY: {user_query}
+        - PDF/Word → Markdown. Preserve all headings, tables, lists,
+          numbering, and cross-references. Use page numbers as section markers.
+        - Excel → CSV (UTF-8) or Markdown tables. Preserve sheet names as headers.
+        - Images → Markdown. Transcribe all visible text. Describe layout.
 
-        You have access to the workspace. Find and read the dataset.
-        Explore it fully. Then define clear boundaries for each category.
-        For ambiguous boundaries, state what goes WHERE and WHY.
-        Give 2-3 examples per category from the actual data.
+        Same folder, same base filename, new extension. Delete originals
+        after conversion. Write a manifest of what you converted.
+
+        CRITICAL: Do not summarize. Do not skip. The converted file must
+        contain every word the original contained.
     """)
 
-    # Phase 2: N parallel agents, each classifying ONE item
-    # Framework is inlined (small, essential). Each agent explores the dataset on its own.
-    items = extract_item_ids(framework_path)
-    result_paths = parallel_runs([
-        f"""
+    # ── Phase 1: Build the classification framework ─────────────────
+    framework_path = agent_run(f"""
+        CONTEXT: You are the first agent in a multi-agent research pipeline.
+        Your output will be used by {"{N}"} parallel agents who will each classify
+        one requirement. Your framework must be precise enough that two
+        independent agents would classify the same borderline requirement
+        the same way.
+
         USER'S QUERY: {user_query}
 
-        CLASSIFICATION FRAMEWORK (from a previous research agent):
+        INSTRUCTIONS:
+        1. Find and read the requirements dataset in the workspace.
+        2. Find and read the SRS or any document that defines the system
+           functions / categories.
+        3. For each category, write:
+           - A 2-3 sentence definition of what this function IS responsible for
+           - A 2-3 sentence definition of what it is NOT (common confusions)
+           - 3 example requirements from the actual dataset that clearly belong here
+           - The keywords that MISLEAD naive classifiers (e.g., "activate" appears
+             in both Protection and Activation requirements — explain the difference)
+        4. For every pair of categories that could be confused, write a
+           disambiguation rule. Example: "If the requirement prevents something
+           from happening, it's Protection (PTC), not Activation (PEA), even if
+           it mentions the word 'activate'."
+
+        OUTPUT FORMAT:
+        Write your framework as a structured document. It will be inlined into
+        the prompt of every downstream agent, so be concise but unambiguous.
+    """)
+
+    # ── Phase 2: N parallel agents, one per requirement ─────────────
+    items = extract_item_ids(framework_path)
+
+    result_paths = parallel_runs([
+        f"""
+        CONTEXT: You are one of {len(items)} parallel research agents. Each agent
+        classifies exactly one requirement. You have access to the full workspace —
+        the dataset, the SRS, everything. You are not limited to the information
+        below; go read the source material to resolve any ambiguity.
+
+        USER'S QUERY: {user_query}
+
+        CLASSIFICATION FRAMEWORK (produced by a prior research agent):
         {framework_path.read_text()}
 
-        YOUR TASK: Focus on item {item_id}. Find it in the dataset, read it,
-        and classify it. Use the framework above. You have access to the full
-        dataset — read other items if you need reference points. Explain your
-        reasoning. Flag if this is a borderline case.
+        YOUR ASSIGNMENT: Classify requirement {item_id}.
+
+        INSTRUCTIONS:
+        1. Find requirement {item_id} in the dataset. Read it carefully.
+        2. Read the surrounding requirements (before and after) for context —
+           requirements near each other often belong to the same function.
+        3. Identify which category it belongs to using the framework above.
+        4. If it's borderline between two categories, apply the disambiguation
+           rules from the framework. If no rule covers this case, flag it.
+
+        OUTPUT FORMAT (strict):
+        REQUIREMENT: [copy the exact text]
+        CATEGORY: [one category code]
+        CONFIDENCE: HIGH | MEDIUM | LOW
+        REASONING: [2-3 sentences explaining why this category and not the
+                     most likely alternative]
+        BORDERLINE: [if LOW/MEDIUM confidence, name the runner-up category
+                      and what would tip the balance]
         """
         for item_id in items
     ])
 
-    # Phase 3: One audit agent checks everything for consistency
-    # Framework inlined (small). 110 classification reports passed as file references (large).
+    # ── Phase 3: Audit for consistency ──────────────────────────────
+    # Framework inlined (small). N classification reports passed as file paths (large).
     audit_path = agent_run(f"""
+        CONTEXT: You are the final agent in a multi-agent classification pipeline.
+        {len(result_paths)} parallel agents each independently classified one
+        requirement. Your job is quality control. You have access to the full
+        workspace — the original dataset, the SRS, everything.
+
         USER'S QUERY: {user_query}
 
         CLASSIFICATION FRAMEWORK:
         {framework_path.read_text()}
 
-        CLASSIFICATION RESULTS: {len(result_paths)} parallel agents each classified
-        one item. Read their reports:
+        CLASSIFICATION REPORTS: Each file below contains one agent's classification
+        of one requirement. Read all of them.
         {chr(10).join(str(p) for p in result_paths)}
 
-        YOUR TASK: Read the classification reports above, then go read the
-        original dataset. Find items with similar wording that were classified
-        differently. Find items that seem miscategorized. Flag systematic errors.
-        Propose corrections with reasoning.
+        INSTRUCTIONS:
+        1. Read every classification report.
+        2. Find INCONSISTENCIES:
+           - Requirements with near-identical wording classified into different categories
+           - Requirements that contradict the disambiguation rules in the framework
+           - Requirements marked LOW confidence — do you agree with the agent's choice?
+        3. Find SYSTEMATIC ERRORS:
+           - Is one category suspiciously over- or under-represented?
+           - Did multiple agents misapply the same disambiguation rule?
+           - Are there requirements that don't fit ANY category?
+        4. Go back to the original dataset and SRS to verify your findings.
+
+        OUTPUT FORMAT:
+        SUMMARY: [total classified, breakdown by category, count of LOW confidence]
+
+        INCONSISTENCIES FOUND:
+        - [requirement ID]: classified as [X], should be [Y] because [reason]
+        ...
+
+        SYSTEMATIC ISSUES:
+        - [description of pattern]
+        ...
+
+        FINAL VERDICT: [is the overall classification trustworthy, or does a
+        specific subset need reclassification?]
     """)
 
     return audit_path
 ```
 
-**Cost: 1 worker + 1 + N + 1 agent runs.**
+**Cost: 1 worker + 1 + 110 + 1 = 113 agent runs. Decision fatigue: zero. Every requirement gets a dedicated agent who can read the full dataset and SRS for context.**
 
 ---
 
-## Pipeline Type 2: Codebase Analysis
+## The Pattern Generalizes
 
-**Accepts:** any user query about understanding, reviewing, or investigating a codebase
-
-**Example invocations:**
-> `codebase_analysis("Review this project for security vulnerabilities")`
-> `codebase_analysis("Where is the rate limiting logic and does it have bypass vulnerabilities?")`
-> `codebase_analysis("Users report login fails intermittently. Find the root cause.")`
-
-**Why a single agent run fails:**
-Even an autonomous agent loses focus over a large codebase. It skims later files. Anchors on the first thing it finds. Misses cross-file data flows because it stops exploring too early.
-
-**The pipeline:**
-
-```python
-def codebase_analysis(user_query: str):
-    # No Phase 0 — source code is already text.
-
-    # Phase 1: Orientation — one agent maps the territory
-    orientation_path = agent_run(f"""
-        USER'S QUERY: {user_query}
-
-        Explore the entire codebase. Produce a structural map:
-        - What does this project do?
-        - What are the major components/modules?
-        - What are the entry points?
-        - What are the key data flows?
-        - List every source file you find and its purpose.
-        - Which files are most relevant to the user's query and why?
-    """)
-
-    # Phase 2: N parallel deep-dive agents, one per file
-    # Orientation inlined (small, essential framing for where to look)
-    files = extract_file_list(orientation_path)
-    deep_dive_paths = parallel_runs([
-        f"""
-        USER'S QUERY: {user_query}
-
-        CODEBASE MAP (from a previous research agent):
-        {orientation_path.read_text()}
-
-        YOUR TASK: Focus your investigation on: {filename}
-        Read this file thoroughly. Then trace how it connects to the rest of
-        the codebase — read other files as needed to understand data flow in
-        and out. Answer the user's query specifically as it relates to this
-        file. Cite specific line numbers and code.
-        """
-        for filename in files
-    ])
-
-    # Phase 3: Synthesis
-    # Orientation inlined (small). Deep-dive reports passed as files (large).
-    synthesis_path = agent_run(f"""
-        USER'S QUERY: {user_query}
-
-        CODEBASE MAP:
-        {orientation_path.read_text()}
-
-        DEEP-DIVE REPORTS: {len(deep_dive_paths)} parallel agents each investigated
-        one file. Read their reports:
-        {chr(10).join(str(p) for p in deep_dive_paths)}
-
-        YOUR TASK: Read the deep-dive reports, then go verify anything that
-        seems off in the actual codebase. Synthesize into a complete answer.
-        Identify cross-cutting patterns that span multiple files. Prioritize
-        findings by severity/importance. Cite files and lines.
-    """)
-
-    return synthesis_path
-```
-
-**Cost: 1 + N_files + 1 agent runs (no conversion needed).**
-
----
-
-## Pipeline Type 3: Document Analysis
-
-**Accepts:** any user query about understanding, summarizing, or extracting from a large document
-
-**Example invocations:**
-> `document_analysis("Summarize this 200-page report into a 2-page executive brief")`
-> `document_analysis("What are the key risk factors mentioned across all sections?")`
-> `document_analysis("Does this contract contain any unusual liability clauses?")`
-
-**Why a single agent run fails:**
-Attention degrades over long documents. The agent skims later sections. Cross-references are missed. Details are lost.
-
-**The pipeline:**
-
-```python
-def document_analysis(user_query: str):
-
-    # Phase 0: Convert PDFs, Word docs, etc. to markdown
-    convert_workspace()
-
-    # Phase 1: One agent reads and maps the document's structure
-    structure_path = agent_run(f"""
-        USER'S QUERY: {user_query}
-
-        Find and read the document in the workspace. Produce a structural overview:
-        - What is this document about?
-        - What are the major sections and what does each cover?
-        - What are the key themes that span multiple sections?
-        - Which sections are most relevant to the user's query?
-    """)
-
-    # Phase 2: N parallel agents, each focused on ONE section
-    # Structure inlined (small, essential for knowing where your section fits)
-    sections = extract_sections(structure_path)
-    section_paths = parallel_runs([
-        f"""
-        USER'S QUERY: {user_query}
-
-        DOCUMENT STRUCTURE (from a previous research agent):
-        {structure_path.read_text()}
-
-        YOUR TASK: Focus on section: '{section_title}'
-        Read this section deeply. You have access to the full document — read
-        other sections if you need to follow cross-references. Extract specific
-        facts, numbers, dates, names, conclusions. Answer the user's query as
-        it relates to this section.
-        """
-        for section_title in sections
-    ])
-
-    # Phase 3: Synthesis
-    # Structure inlined. Section analyses passed as files.
-    final_path = agent_run(f"""
-        USER'S QUERY: {user_query}
-
-        DOCUMENT STRUCTURE:
-        {structure_path.read_text()}
-
-        SECTION ANALYSES: {len(section_paths)} parallel agents each analyzed
-        one section. Read their reports:
-        {chr(10).join(str(p) for p in section_paths)}
-
-        YOUR TASK: Read the section analyses, then go verify in the original
-        document as needed. Synthesize into a final answer. Preserve specific
-        details. Identify cross-section patterns. Structure your answer clearly.
-    """)
-
-    return final_path
-```
-
-**Cost: 1 worker + 1 + N_sections + 1 agent runs.**
-
----
-
-## Pipeline Type 4: Comparative Evaluation
-
-**Accepts:** any user query about comparing, ranking, or choosing between multiple items
-
-**Example invocations:**
-> `comparative_eval("Compare these 4 vendor proposals and recommend one")`
-> `comparative_eval("Which of these 3 architectural approaches is best for our scale?")`
-
-**Why a single agent run fails:**
-Recency bias — the agent favors whatever it read last. Inconsistent criteria application across items. Superficial comparisons.
-
-**The pipeline:**
-
-```python
-def comparative_eval(user_query: str):
-
-    # Phase 0: Convert proposals (likely PDFs, Word, PPT) to markdown
-    convert_workspace()
-
-    # Phase 1: One agent surveys all items and defines evaluation criteria
-    criteria_path = agent_run(f"""
-        USER'S QUERY: {user_query}
-
-        Find and read all items to be compared in the workspace.
-        Define 8-10 evaluation criteria with weights (must sum to 100%).
-        The criteria should be relevant to the user's query and fair to
-        all items. For each criterion, define what a score of 1, 5, and
-        10 looks like.
-    """)
-
-    # Phase 2: N parallel agents, each deeply evaluating ONE item
-    # Criteria inlined (small, essential for consistent scoring)
-    items = extract_item_names(criteria_path)
-    eval_paths = parallel_runs([
-        f"""
-        USER'S QUERY: {user_query}
-
-        EVALUATION CRITERIA (from a previous research agent):
-        {criteria_path.read_text()}
-
-        YOUR TASK: Focus your evaluation on: {item_name}
-        Read it thoroughly. You can also read the other items for
-        comparison. Evaluate against every criterion — score (1-10),
-        specific evidence, and how it compares to what others offer.
-        """
-        for item_name in items
-    ])
-
-    # Phase 3: Cross-comparison and recommendation
-    # Criteria inlined. Individual evaluations passed as files.
-    recommendation_path = agent_run(f"""
-        USER'S QUERY: {user_query}
-
-        EVALUATION CRITERIA:
-        {criteria_path.read_text()}
-
-        INDIVIDUAL EVALUATIONS: {len(eval_paths)} parallel agents each evaluated
-        one item. Read their reports:
-        {chr(10).join(str(p) for p in eval_paths)}
-
-        YOUR TASK: Read the evaluation reports. Build a comparison matrix.
-        Identify where items differ most. Check for scoring inconsistencies —
-        go read the original items if something seems off. Make a final
-        recommendation with the top 3 reasons. Acknowledge the runner-up.
-    """)
-
-    return recommendation_path
-```
-
-**Cost: 1 worker + 1 + N_items + 1 agent runs.**
-
----
-
-## Pipeline Type 5: Data Validation
-
-**Accepts:** any user query about validating, auditing, or checking consistency of a dataset
-
-**Example invocations:**
-> `data_validation("Validate these 50 medical records for consistency and flag anomalies")`
-> `data_validation("Check these financial transactions for duplicates and errors")`
-
-**Why a single agent run fails:**
-Attention spread thin across many records. Inconsistent rule application. Misses subtle patterns in later records.
-
-**The pipeline:**
-
-```python
-def data_validation(user_query: str):
-
-    # Phase 0: Convert Excel, proprietary formats, etc. to clean CSV/markdown
-    convert_workspace()
-
-    # Phase 1: One agent explores the dataset and defines validation rules
-    rules_path = agent_run(f"""
-        USER'S QUERY: {user_query}
-
-        Find and read the dataset in the workspace. Examine it fully. Define
-        validation rules based on:
-        - Domain knowledge (what values are plausible?)
-        - Internal consistency (what fields should agree with each other?)
-        - Statistical norms (what's typical in this dataset?)
-        For each rule, state what a violation looks like.
-    """)
-
-    # Phase 2: N parallel agents, each scrutinizing ONE record
-    # Rules inlined (small, essential for consistent validation)
-    records = extract_record_ids(rules_path)
-    validation_paths = parallel_runs([
-        f"""
-        USER'S QUERY: {user_query}
-
-        VALIDATION RULES (from a previous research agent):
-        {rules_path.read_text()}
-
-        YOUR TASK: Focus on record: {record_id}
-        Find and read this record. You have access to the full dataset —
-        read other records as baselines for what "normal" looks like.
-        Apply every validation rule. For each: PASS/FAIL/SUSPECT with
-        evidence and reasoning.
-        """
-        for record_id in records
-    ])
-
-    # Phase 3: Pattern analysis across all validations
-    # Rules inlined. Validation reports passed as files.
-    patterns_path = agent_run(f"""
-        USER'S QUERY: {user_query}
-
-        VALIDATION RULES:
-        {rules_path.read_text()}
-
-        VALIDATION RESULTS: {len(validation_paths)} parallel agents each validated
-        one record. Read their reports:
-        {chr(10).join(str(p) for p in validation_paths)}
-
-        YOUR TASK: Read the validation reports, then go read the original
-        dataset to verify patterns. Look for SYSTEMATIC issues — failures
-        clustered by source, date, or category. Records individually valid
-        but collectively impossible. Top 3 most critical findings.
-    """)
-
-    return patterns_path
-```
-
-**Cost: 1 worker + 1 + N_records + 1 agent runs.**
-
----
-
-## Pipeline Type 6: Hypothesis Investigation
-
-**Accepts:** any user query about debugging, diagnosing, or root-cause analysis
-
-**Example invocations:**
-> `investigate("Users report login fails intermittently. Find the root cause.")`
-> `investigate("Why is the API response time spiking every 30 minutes?")`
-
-**Why a single agent run fails:**
-Anchors on the first plausible explanation. Stops exploring once it has "an answer." Doesn't systematically evaluate evidence for and against each theory.
-
-**The pipeline:**
-
-```python
-def investigate(user_query: str):
-    # No Phase 0 — code, config, and logs are already text.
-
-    # Phase 1: One agent explores everything and generates hypotheses
-    hypotheses_path = agent_run(f"""
-        USER'S QUERY: {user_query}
-
-        Explore the workspace — read code, config, logs, anything relevant.
-        Generate 5-7 specific hypotheses that could explain the issue.
-        For each hypothesis, state:
-        - What you'd expect to see in the code/logs if it's TRUE
-        - What you'd expect to see if it's FALSE
-        - Which specific files/areas to examine
-    """)
-
-    # Phase 2: N parallel agents, each evaluating ONE hypothesis
-    # Hypotheses report inlined (small, and each agent needs to see
-    # its own hypothesis plus the others for context)
-    hypotheses = parse_hypotheses(hypotheses_path)
-    eval_paths = parallel_runs([
-        f"""
-        USER'S QUERY: {user_query}
-
-        ALL HYPOTHESES (from a previous research agent):
-        {hypotheses_path.read_text()}
-
-        YOUR TASK: Evaluate this ONE hypothesis: {hypothesis}
-
-        Explore the workspace — read code, config, logs, anything relevant.
-        Systematically look for evidence:
-        - What SUPPORTS this hypothesis? (cite specific files and lines)
-        - What CONTRADICTS it?
-        - What's MISSING that would confirm or rule it out?
-        - Confidence: HIGH / MEDIUM / LOW with justification
-        """
-        for hypothesis in hypotheses
-    ])
-
-    # Phase 3: Diagnosis — weigh all evaluations
-    # Hypotheses inlined (small). Evaluation reports passed as files.
-    diagnosis_path = agent_run(f"""
-        USER'S QUERY: {user_query}
-
-        HYPOTHESES:
-        {hypotheses_path.read_text()}
-
-        HYPOTHESIS EVALUATIONS: {len(eval_paths)} parallel agents each investigated
-        one hypothesis. Read their reports:
-        {chr(10).join(str(p) for p in eval_paths)}
-
-        YOUR TASK: Read the evaluation reports. Go verify the strongest
-        findings in the codebase yourself. Which hypothesis has the strongest
-        evidence? Could multiple be true simultaneously? Recommend a specific
-        fix with concrete steps.
-    """)
-
-    return diagnosis_path
-```
-
-**Cost: 1 + N_hypotheses + 1 agent runs (no conversion needed).**
-
----
-
-## The Universal Pattern
-
-Every pipeline follows the same structure:
+The structure is always the same:
 
 ```
-Phase 0: CONVERT    — one worker agent converts workspace files to text (if needed)
-Phase 1: ORIENT     — one read-only agent explores the workspace, builds a framework/map
-Phase 2: DEEP-DIVE  — N parallel read-only agents, each explores independently, each answers ONE question
-Phase 3: SYNTHESIZE  — one read-only agent reads all reports, verifies in the workspace, produces final answer
+Phase 0: CONVERT    — worker agent makes workspace searchable (if needed)
+Phase 1: ORIENT     — one read-only agent explores, builds a framework
+Phase 2: DEEP-DIVE  — N parallel read-only agents, each answers ONE question
+Phase 3: SYNTHESIZE  — one read-only agent reads all reports, checks consistency
 ```
 
-Key principles:
-
-1. **Two agent types, strict separation.** Worker agents (`agent_work`) can modify files — used only in Phase 0 for format conversion. Research agents (`agent_run`) are read-only — used for all analysis. Research agents cannot corrupt the workspace.
-
-2. **Agents explore, they aren't fed.** No data loading, no file concatenation, no chunking. Each agent is an autonomous session with full workspace access. It finds what it needs.
-
-3. **Only reports flow between phases.** The orchestration layer passes exactly one thing between phases: the file output of previous agents. An orientation report. A classification framework. A set of hypotheses.
-
-4. **Context delivery is a choice.** Small, essential framing (a framework, a set of criteria) is inlined in the prompt — the agent has it immediately. Large bodies of work (N parallel reports) are passed as file references — the agent reads them from disk, selectively if needed. This keeps prompts focused while allowing massive volumes of prior-agent output.
-
-5. **Pipelines are task types, not scripts.** Each pipeline accepts the user's query as input. The same `codebase_analysis()` handles security reviews, bug hunts, and architecture questions. The user's query shapes the questions; the pipeline shapes the workflow.
-
-6. **Compute is the currency.** Each agent run costs real time and resources. The return is depth and accuracy that a single run cannot achieve — the same way a team of specialists outperforms one generalist, even though the team costs more.
-
-## When NOT to Use This
-
-- Simple questions ("What does this function do?") — one agent run is fine
-- Creative tasks with no ground truth ("Write me a poem") — parallelism doesn't help
-- Tasks with <5 items — overhead isn't worth it
-- Real-time / interactive use — latency matters more than accuracy
-
-## When This Dominates
-
-- **N-item classification/review/validation** — eliminates decision fatigue
-- **Large document analysis** — every section gets a dedicated investigator
-- **Cross-file codebase analysis** — each file gets an agent who can also explore the rest
-- **Comparative evaluation** — eliminates recency/order bias
-- **Root-cause investigation** — each hypothesis gets an independent, unbiased investigator
-- **Any task where a single agent takes shortcuts because the job is too big**
+Other applications: codebase security review (one agent per file), document analysis (one agent per section), vendor comparison (one agent per proposal), data validation (one agent per record), root-cause investigation (one agent per hypothesis). The pipeline shape stays the same — only the prompts change.
