@@ -14,20 +14,81 @@ The tradeoff is explicit: **spend N times the compute, get N times the depth.**
 
 ---
 
-## The Primitive
+## Two Agent Types
+
+### Read-Only Agent (the common type)
 
 ```python
 agent_run(instructions: str) -> Path
 ```
 
-Launches a full autonomous read-only agent session. The agent has access to the workspace (file read, search, grep, glob, etc.) and will explore on its own. Writes its report to a file and **returns the file path.**
+Launches a full autonomous **read-only** agent session. Can read files, search, grep, glob — but **cannot modify the workspace.** Writes its report to a file and returns the path. This is the agent used in every research, analysis, and synthesis phase.
 
-**Parallelism helper:**
 ```python
 parallel_runs(instructions: list[str]) -> list[Path]
 ```
 
-That's it. Everything else is just Python.
+### Worker Agent (for file conversion)
+
+```python
+agent_work(instructions: str) -> Path
+```
+
+Launches a full autonomous **read-write** agent session. Can read, write, delete, and rename files in the workspace. Writes its report to a file and returns the path. **Used only for the conversion phase** at the beginning of pipelines — never for research.
+
+The separation is deliberate. Research agents cannot corrupt the workspace. Only the conversion agent modifies files, and it runs once, before any research begins.
+
+---
+
+## Phase 0: File Conversion
+
+Most pipelines operate on workspaces that contain files agents need to read — but those files might be PDFs, Word docs, Excel spreadsheets, PowerPoint decks, images with text, or other formats that agents can't grep, search, or easily read.
+
+**Phase 0 converts the workspace into LLM-readable formats.** It runs a single `agent_work()` that:
+
+1. Finds all non-text files in the workspace
+2. Converts each to a high-quality text equivalent (markdown, plain text, CSV)
+3. Deletes the originals
+4. Preserves the directory structure and naming (e.g., `report.pdf` → `report.md`)
+
+```python
+def convert_workspace():
+    """Phase 0: Convert workspace files to LLM-readable formats.
+    Uses a worker agent (read-write). Runs once before any research begins."""
+
+    return agent_work(f"""
+        Survey the workspace. Find all files that are not plain text / code.
+        Convert each to a high-quality LLM-readable format:
+
+        - PDF → Markdown (preserve headings, tables, lists, page numbers as section markers)
+        - Word (.docx) → Markdown (preserve all formatting structure)
+        - Excel (.xlsx) / CSV with complex encoding → clean UTF-8 CSV or Markdown tables
+        - PowerPoint (.pptx) → Markdown (one section per slide, include speaker notes)
+        - Images with text → Markdown (describe visual layout, transcribe all text)
+        - HTML → Markdown
+
+        Rules:
+        - PRESERVE the directory structure. Same folder, same base filename, new extension.
+        - DELETE the original after successful conversion.
+        - If a file is already plain text, code, markdown, or clean CSV — leave it alone.
+        - Write a conversion manifest listing every file converted and its new path.
+        - Prioritize COMPLETENESS over brevity — do not summarize, do not skip sections.
+          The converted file must contain everything the original contained.
+    """)
+```
+
+**Phase 0 is the only phase that uses `agent_work()`.** Every subsequent phase uses `agent_run()` (read-only). After Phase 0, the workspace is fully searchable, greppable, and readable by all research agents.
+
+**When to use Phase 0:**
+
+| Pipeline | Phase 0 needed? | Why |
+|---|---|---|
+| N-Item Classification | **Usually** | Datasets often come as Excel, PDF tables |
+| Codebase Analysis | **No** | Source code is already text |
+| Document Analysis | **Yes** | Documents are typically PDF, Word |
+| Comparative Evaluation | **Yes** | Proposals/designs are typically PDF, Word, PPT |
+| Data Validation | **Usually** | Datasets often come as Excel, proprietary formats |
+| Hypothesis Investigation | **No** | Code, config, and logs are already text |
 
 ---
 
@@ -84,6 +145,9 @@ Decision fatigue after ~30 items. Keyword-matching replaces thinking. Internal i
 ```python
 def classify(user_query: str):
 
+    # Phase 0: Convert workspace files to LLM-readable formats
+    convert_workspace()
+
     # Phase 1: One agent explores the data and defines the classification framework
     framework_path = agent_run(f"""
         USER'S QUERY: {user_query}
@@ -133,7 +197,7 @@ def classify(user_query: str):
     return audit_path
 ```
 
-**Cost: 1 + N + 1 agent runs. Framework inlined to every worker (small, essential). 110 results passed as files to the auditor (large, selectively read).**
+**Cost: 1 worker + 1 + N + 1 agent runs.**
 
 ---
 
@@ -153,6 +217,7 @@ Even an autonomous agent loses focus over a large codebase. It skims later files
 
 ```python
 def codebase_analysis(user_query: str):
+    # No Phase 0 — source code is already text.
 
     # Phase 1: Orientation — one agent maps the territory
     orientation_path = agent_run(f"""
@@ -207,7 +272,7 @@ def codebase_analysis(user_query: str):
     return synthesis_path
 ```
 
-**Cost: 1 + N_files + 1 agent runs. Every file gets a dedicated investigator. The synthesis agent reads all reports from disk, can verify in the codebase.**
+**Cost: 1 + N_files + 1 agent runs (no conversion needed).**
 
 ---
 
@@ -227,6 +292,9 @@ Attention degrades over long documents. The agent skims later sections. Cross-re
 
 ```python
 def document_analysis(user_query: str):
+
+    # Phase 0: Convert PDFs, Word docs, etc. to markdown
+    convert_workspace()
 
     # Phase 1: One agent reads and maps the document's structure
     structure_path = agent_run(f"""
@@ -278,7 +346,7 @@ def document_analysis(user_query: str):
     return final_path
 ```
 
-**Cost: 1 + N_sections + 1 agent runs. Every section gets a dedicated analyst. Synthesis agent reads all section reports from disk.**
+**Cost: 1 worker + 1 + N_sections + 1 agent runs.**
 
 ---
 
@@ -297,6 +365,9 @@ Recency bias — the agent favors whatever it read last. Inconsistent criteria a
 
 ```python
 def comparative_eval(user_query: str):
+
+    # Phase 0: Convert proposals (likely PDFs, Word, PPT) to markdown
+    convert_workspace()
 
     # Phase 1: One agent surveys all items and defines evaluation criteria
     criteria_path = agent_run(f"""
@@ -348,7 +419,7 @@ def comparative_eval(user_query: str):
     return recommendation_path
 ```
 
-**Cost: 1 + N_items + 1 agent runs. Each evaluator gets criteria inlined for consistency. Final agent reads all evaluations from disk.**
+**Cost: 1 worker + 1 + N_items + 1 agent runs.**
 
 ---
 
@@ -367,6 +438,9 @@ Attention spread thin across many records. Inconsistent rule application. Misses
 
 ```python
 def data_validation(user_query: str):
+
+    # Phase 0: Convert Excel, proprietary formats, etc. to clean CSV/markdown
+    convert_workspace()
 
     # Phase 1: One agent explores the dataset and defines validation rules
     rules_path = agent_run(f"""
@@ -420,7 +494,7 @@ def data_validation(user_query: str):
     return patterns_path
 ```
 
-**Cost: 1 + N_records + 1 agent runs. Rules inlined to every validator for consistency. All validation reports passed as files to pattern analyzer.**
+**Cost: 1 worker + 1 + N_records + 1 agent runs.**
 
 ---
 
@@ -439,6 +513,7 @@ Anchors on the first plausible explanation. Stops exploring once it has "an answ
 
 ```python
 def investigate(user_query: str):
+    # No Phase 0 — code, config, and logs are already text.
 
     # Phase 1: One agent explores everything and generates hypotheses
     hypotheses_path = agent_run(f"""
@@ -496,7 +571,7 @@ def investigate(user_query: str):
     return diagnosis_path
 ```
 
-**Cost: 1 + N_hypotheses + 1 agent runs. Each investigator explores independently. Diagnosis agent reads all evaluation reports from disk and verifies.**
+**Cost: 1 + N_hypotheses + 1 agent runs (no conversion needed).**
 
 ---
 
@@ -505,22 +580,25 @@ def investigate(user_query: str):
 Every pipeline follows the same structure:
 
 ```
-Phase 1: ORIENT     — one agent explores the workspace, builds a framework/map
-Phase 2: DEEP-DIVE  — N parallel agents, each explores independently, each answers ONE question
-Phase 3: SYNTHESIZE  — one agent reads all reports, verifies in the workspace, produces final answer
+Phase 0: CONVERT    — one worker agent converts workspace files to text (if needed)
+Phase 1: ORIENT     — one read-only agent explores the workspace, builds a framework/map
+Phase 2: DEEP-DIVE  — N parallel read-only agents, each explores independently, each answers ONE question
+Phase 3: SYNTHESIZE  — one read-only agent reads all reports, verifies in the workspace, produces final answer
 ```
 
 Key principles:
 
-1. **Agents explore, they aren't fed.** No data loading, no file concatenation, no chunking. Each agent is an autonomous session with full workspace access. It finds what it needs.
+1. **Two agent types, strict separation.** Worker agents (`agent_work`) can modify files — used only in Phase 0 for format conversion. Research agents (`agent_run`) are read-only — used for all analysis. Research agents cannot corrupt the workspace.
 
-2. **Only reports flow between phases.** The orchestration layer passes exactly one thing between phases: the file output of previous agents. An orientation report. A classification framework. A set of hypotheses.
+2. **Agents explore, they aren't fed.** No data loading, no file concatenation, no chunking. Each agent is an autonomous session with full workspace access. It finds what it needs.
 
-3. **Context delivery is a choice.** Small, essential framing (a framework, a set of criteria) is inlined in the prompt — the agent has it immediately. Large bodies of work (N parallel reports) are passed as file references — the agent reads them from disk, selectively if needed. This keeps prompts focused while allowing massive volumes of prior-agent output.
+3. **Only reports flow between phases.** The orchestration layer passes exactly one thing between phases: the file output of previous agents. An orientation report. A classification framework. A set of hypotheses.
 
-4. **Pipelines are task types, not scripts.** Each pipeline accepts the user's query as input. The same `codebase_analysis()` handles security reviews, bug hunts, and architecture questions. The user's query shapes the questions; the pipeline shapes the workflow.
+4. **Context delivery is a choice.** Small, essential framing (a framework, a set of criteria) is inlined in the prompt — the agent has it immediately. Large bodies of work (N parallel reports) are passed as file references — the agent reads them from disk, selectively if needed. This keeps prompts focused while allowing massive volumes of prior-agent output.
 
-5. **Compute is the currency.** Each agent run costs real time and resources. The return is depth and accuracy that a single run cannot achieve — the same way a team of specialists outperforms one generalist, even though the team costs more.
+5. **Pipelines are task types, not scripts.** Each pipeline accepts the user's query as input. The same `codebase_analysis()` handles security reviews, bug hunts, and architecture questions. The user's query shapes the questions; the pipeline shapes the workflow.
+
+6. **Compute is the currency.** Each agent run costs real time and resources. The return is depth and accuracy that a single run cannot achieve — the same way a team of specialists outperforms one generalist, even though the team costs more.
 
 ## When NOT to Use This
 
