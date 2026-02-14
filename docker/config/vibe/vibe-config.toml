@@ -1,9 +1,7 @@
-# Vibe CLI v2.0.2 configuration for Docker container
-# Based on battle-tested config from mistral_vibe_setup
+# Vibe CLI configuration for Docker container
 #
 # IMPORTANT: Ollama Load Balancer must listen on 172.17.0.1:11434 (docker0)
-# so that containers can reach it. Modify main.rs to bind to 172.17.0.1:11434
-# instead of 127.0.0.1:11434.
+# so that containers can reach it.
 
 # =============================================================================
 # Core Settings
@@ -12,79 +10,29 @@
 # Set at container start by VIBE_MODE env var (local|cloud)
 # "devstral-local" = Ollama, "devstral-cloud" = Mistral API
 active_model = "__VIBE_ACTIVE_MODEL__"
-textual_theme = "atom-one-dark"
 
-# Disable auto-update (we're running a patched version from source)
+# Disable auto-update (container image is immutable)
 enable_auto_update = false
 enable_update_checks = false
 
-# Trigger Vibe's automatic summarization ("compaction") before we hit the real limit.
-# We set it below 104k to leave headroom for:
-# - Vibe's system prompt + tool traces
-# - the model's in-progress output tokens
+# Ollama model has 104K context — compact well before hitting it
+# (new Vibe default is 200K, which would overflow our local model)
 auto_compact_threshold = 95000
-
-# API timeout in seconds - Ollama can be slow on first inference or long contexts
-# Set high to prevent timeouts during model loading or large context processing
-api_timeout = 900.0
-
-# =============================================================================
-# Agent Configuration (v2.0.0+)
-# =============================================================================
-# Available agents: default, plan, accept-edits, auto-approve, explore
-# - default: Requires approval for tool executions
-# - plan: Read-only agent for exploration and planning
-# - accept-edits: Auto-approves file edits only
-# - auto-approve: Auto-approves all tool executions (YOLO mode)
-# - explore: Read-only subagent for codebase exploration (used by task tool)
-
-# All agents enabled - users can cycle with Shift+Tab
-
-# =============================================================================
-# Tool Configuration
-# =============================================================================
-
-# --- Subagent / Task Tool ---
-# The "task" tool spawns subagents for autonomous research using Mistral Cloud.
-# Main agent stays on local Ollama, subagents use fast cloud inference.
-# This avoids KV cache eviction since subagents don't compete for local GPU.
-#
-# TOGGLE: To DISABLE subagents entirely, uncomment this line:
-# disabled_tools = ["task"]
-disabled_tools = []
-
-[tools.bash]
-# Generous timeout for complex operations (5 minutes)
-default_timeout = 300
-# Capture more output for debugging
-max_output_bytes = 32000
-
-# --- Auto-approve safe read-only tools ---
-# These tools cannot modify anything, so they're safe to auto-approve
-[tools.read_file]
-permission = "always"
-
-[tools.grep]
-permission = "always"
-
-[tools.todo]
-permission = "always"
 
 # =============================================================================
 # Provider Configuration
 # =============================================================================
 
-# --- Local Ollama (for main agent) ---
+# --- Local Ollama ---
 [[providers]]
 name = "ollama-docker0"
-# Point at Ollama Load Balancer on docker0 interface
 # Containers reach host at 172.17.0.1 (Docker bridge IP)
 api_base = "http://172.17.0.1:11434/v1"
 api_key_env_var = "OLLAMA_API_KEY"
 api_style = "openai"
 backend = "generic"
 
-# --- Mistral Cloud (for subagents) ---
+# --- Mistral Cloud ---
 [[providers]]
 name = "mistral-cloud"
 api_base = "https://api.mistral.ai/v1"
@@ -95,27 +43,18 @@ backend = "mistral"
 # Model Configuration
 # =============================================================================
 
-# --- Main Agent Model (Local Ollama) ---
+# --- Local Ollama ---
 [[models]]
 name = "devstral-vibe"
 provider = "ollama-docker0"
 alias = "devstral-local"
-temperature = 0.2
 input_price = 0.0
 output_price = 0.0
 
-# --- Subagent Model (Mistral Cloud) ---
-# Used by the custom explore agent defined in agents/explore.toml
-# Devstral Small 2 (24B) - the newer version with 256K context
+# --- Mistral Cloud ---
 [[models]]
-name = "labs-devstral-small-2512"
+name = "devstral-small-2501"
 provider = "mistral-cloud"
 alias = "devstral-cloud"
-temperature = 0.2
-input_price = 0.10  # $0.10 per million input tokens
-output_price = 0.30 # $0.30 per million output tokens
-
-# --- Alternative: Subagent on Local Ollama ---
-# TOGGLE: To use local Ollama for subagents instead of cloud:
-# 1. Edit agents/explore.toml and change active_model to "devstral-local"
-# 2. Or create agents/explore.toml with active_model = "devstral-local"
+input_price = 0.10
+output_price = 0.30

@@ -942,8 +942,6 @@ RUN mkdir -p /home/vibe/.vibe
 COPY --chown=vibe:vibe config/vibe/vibe-config.toml /home/vibe/.vibe/config.toml
 COPY --chown=vibe:vibe config/vibe/vibe-env /home/vibe/.vibe/.env
 COPY --chown=vibe:vibe config/vibe/vibe-trusted-folders.toml /home/vibe/.vibe/trusted_folders.toml
-COPY --chown=vibe:vibe config/vibe/agents /home/vibe/.vibe/agents
-COPY --chown=vibe:vibe config/vibe/prompts /home/vibe/.vibe/prompts
 
 # Copy secrets file and append to .env
 # BUILD WILL FAIL if vibe-secrets.env doesn't exist - this is intentional!
@@ -1070,7 +1068,6 @@ RUN echo 'export PS1="\[\033[1;32m\]\u@vibe-terminal\[\033[0m\]:\[\033[1;34m\]\w
     && echo 'echo "  Scroll wheel                 Scroll terminal history"' >> /home/vibe/.bashrc \
     && echo 'echo ""' >> /home/vibe/.bashrc \
     && echo 'echo "- Type \"vibe --agent auto-approve\" to start Vibe CLI (default)"' >> /home/vibe/.bashrc \
-    && echo 'echo "- Tip: Ask the agent to \"use subagents\" for deeper research"' >> /home/vibe/.bashrc \
     && echo 'echo "- Your workspace is /home/vibe/workspace"' >> /home/vibe/.bashrc \
     && echo 'echo "- Password for sudo: password"' >> /home/vibe/.bashrc \
     && echo 'echo ""' >> /home/vibe/.bashrc
