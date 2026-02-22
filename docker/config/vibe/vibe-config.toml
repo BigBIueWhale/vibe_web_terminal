@@ -15,6 +15,9 @@ active_model = "__VIBE_ACTIVE_MODEL__"
 enable_auto_update = false
 enable_update_checks = false
 
+# Disable telemetry (no phoning home from containers)
+enable_telemetry = false
+
 # Ollama model has 104K context — compact well before hitting it
 # (new Vibe default is 200K, which would overflow our local model)
 auto_compact_threshold = 95000

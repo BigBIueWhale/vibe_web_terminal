@@ -925,12 +925,10 @@ ENV PATH="/home/vibe/.local/bin:$PATH"
 # Copy system prompt suffix (environment context to append to cli.md)
 COPY config/vibe/system-prompt-suffix.md /tmp/system-prompt-suffix.md
 
-# Install Vibe CLI v2.1.0 from source with patch:
+# Install Vibe CLI v2.2.1 from source with patch:
 # Append Docker environment context to system prompt (cli.md)
-# NOTE: Response streaming causes significant delay (~2x slower token display),
-# but disabling it triggers race conditions within Vibe's async code, so we keep it.
-# To disable streaming, add before uv install: sed -i 's/stream=True/stream=False/' /tmp/vibe/vibe/core/client.py
-RUN git clone --branch v2.1.0 --depth 1 https://github.com/mistralai/mistral-vibe /tmp/vibe \
+# Streaming batching was removed in v2.2.0 — chunks now yield immediately.
+RUN git clone --branch v2.2.1 --depth 1 https://github.com/mistralai/mistral-vibe /tmp/vibe \
     && cat /tmp/system-prompt-suffix.md >> /tmp/vibe/vibe/core/prompts/cli.md \
     && /home/vibe/.local/bin/uv tool install /tmp/vibe \
     && rm -rf /tmp/vibe
