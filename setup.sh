@@ -8,6 +8,11 @@ FORCE_BUILD=false
 for arg in "$@"; do
     case "$arg" in
         --force-build) FORCE_BUILD=true ;;
+        *)
+            echo "ERROR: Unknown argument '$arg'"
+            echo "Usage: $0 [--force-build]"
+            exit 1
+            ;;
     esac
 done
 

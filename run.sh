@@ -18,6 +18,7 @@ UPSTREAM_PORT=8081
 NO_SSL=false
 AUTO_CERT=true  # Pass --auto-cert to rust_proxy by default
 VIBE_MODE="${VIBE_MODE:-local}"  # local = Ollama, cloud = Mistral API
+AGENT_CLI="${AGENT_CLI:-vibe}"  # vibe, opencode, or qwen
 
 # =============================================================================
 # Usage
@@ -40,6 +41,8 @@ Options:
                         Required when using externally signed certificates
   --vibe-mode MODE      Vibe CLI model mode: "local" (Ollama) or "cloud" (Mistral API)
                         (default: local, or VIBE_MODE env var)
+  --agent-cli CLI       AI agent to start: "vibe", "opencode", or "qwen"
+                        (default: vibe, or AGENT_CLI env var)
   -h, --help            Show this help message
 
 Examples:
@@ -98,6 +101,10 @@ while [[ $# -gt 0 ]]; do
             VIBE_MODE="$2"
             shift 2
             ;;
+        --agent-cli)
+            AGENT_CLI="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             ;;
@@ -108,6 +115,26 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# =============================================================================
+# Validate enum arguments
+# =============================================================================
+
+case "$VIBE_MODE" in
+    local|cloud) ;;
+    *)
+        echo "ERROR: Unknown --vibe-mode '$VIBE_MODE'. Must be one of: local, cloud"
+        exit 1
+        ;;
+esac
+
+case "$AGENT_CLI" in
+    vibe|opencode|qwen) ;;
+    *)
+        echo "ERROR: Unknown --agent-cli '$AGENT_CLI'. Must be one of: vibe, opencode, qwen"
+        exit 1
+        ;;
+esac
 
 # =============================================================================
 # Setup Checks
@@ -188,7 +215,7 @@ fi
 # =============================================================================
 
 # Start backend server
-run_python "$SCRIPT_DIR/server/app.py" --vibe-mode "$VIBE_MODE" &
+run_python "$SCRIPT_DIR/server/app.py" --vibe-mode "$VIBE_MODE" --agent-cli "$AGENT_CLI" &
 SERVER_PID=$!
 
 # Start reverse proxy

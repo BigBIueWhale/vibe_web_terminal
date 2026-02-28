@@ -2,11 +2,18 @@
 # Container entrypoint: one-time setup, then start ttyd
 
 # Configure Vibe CLI model based on VIBE_MODE env var (default: local)
-if [ "$VIBE_MODE" = "cloud" ]; then
-    sed -i 's/__VIBE_ACTIVE_MODEL__/devstral-cloud/' ~/.vibe/config.toml
-else
-    sed -i 's/__VIBE_ACTIVE_MODEL__/devstral-local/' ~/.vibe/config.toml
-fi
+case "${VIBE_MODE:-local}" in
+    local)
+        sed -i 's/__VIBE_ACTIVE_MODEL__/devstral-local/' ~/.vibe/config.toml
+        ;;
+    cloud)
+        sed -i 's/__VIBE_ACTIVE_MODEL__/devstral-cloud/' ~/.vibe/config.toml
+        ;;
+    *)
+        echo "ERROR: Unknown VIBE_MODE='${VIBE_MODE}'. Must be one of: local, cloud" >&2
+        exit 1
+        ;;
+esac
 
 # Start ttyd with persistent tmux session
 # -W: Writable (allow client input)

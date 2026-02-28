@@ -19,14 +19,18 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
 else
     # Select which CLI to pre-type based on AGENT_CLI env var
     case "${AGENT_CLI:-vibe}" in
-        qwen)
-            AGENT_CMD="clear && printf '\\e[3J' && qwen --yolo"
+        vibe)
+            AGENT_CMD="clear && printf '\\e[3J' && vibe --agent auto-approve"
             ;;
         opencode)
             AGENT_CMD="clear && printf '\\e[3J' && opencode"
             ;;
+        qwen)
+            AGENT_CMD="clear && printf '\\e[3J' && qwen --yolo"
+            ;;
         *)
-            AGENT_CMD="clear && printf '\\e[3J' && vibe --agent auto-approve"
+            echo "ERROR: Unknown AGENT_CLI='${AGENT_CLI}'. Must be one of: vibe, opencode, qwen" >&2
+            exit 1
             ;;
     esac
 
