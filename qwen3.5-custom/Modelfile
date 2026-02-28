@@ -1,0 +1,6 @@
+FROM qwen3.5:27b-q4_K_M
+
+PARAMETER num_ctx 131072
+PARAMETER num_predict 81920
+PARAMETER repeat_penalty 1.0
+PARAMETER presence_penalty 1.5

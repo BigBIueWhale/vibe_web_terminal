@@ -1,0 +1,54 @@
+{
+  "modelProviders": {
+    "openai": [
+      {
+        "id": "qwen3.5-custom",
+        "name": "Qwen 3.5 27B (Ollama)",
+        "envKey": "OLLAMA_API_KEY",
+        "baseUrl": "http://172.17.0.1:11434/v1",
+        "generationConfig": {
+          "timeout": 300000,
+          "maxRetries": 1,
+          "contextWindowSize": 131072,
+          "samplingParams": {
+            "temperature": 1.0,
+            "top_p": 0.95,
+            "presence_penalty": 1.5,
+            "max_tokens": 81920
+          }
+        }
+      }
+    ]
+  },
+  "env": {
+    "OLLAMA_API_KEY": "ollama"
+  },
+  "security": {
+    "auth": {
+      "selectedType": "openai"
+    }
+  },
+  "model": {
+    "name": "qwen3.5-custom",
+    "generationConfig": {
+      "contextWindowSize": 131072
+    },
+    "chatCompression": {
+      "contextPercentageThreshold": 0.94
+    }
+  },
+  "general": {
+    "enableAutoUpdate": false,
+    "terminalBell": false
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  },
+  "ui": {
+    "enableUserFeedback": false,
+    "enableWelcomeBack": false
+  },
+  "tools": {
+    "approvalMode": "yolo"
+  }
+}

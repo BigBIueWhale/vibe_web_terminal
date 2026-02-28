@@ -984,9 +984,33 @@ COPY --chown=vibe:vibe config/opencode/opencode.json /home/vibe/.config/opencode
 # Copy OpenCode custom instructions (environment context for the agent)
 COPY --chown=vibe:vibe config/opencode/opencode-agents.md /home/vibe/.config/opencode/AGENTS.md
 
+# ============================================================
+# QWEN CODE CLI (Qwen 3.5 agentic coding agent)
+# ============================================================
+# Qwen Code is the official Qwen terminal coding agent.
+# It connects to Ollama via the OpenAI-compatible API at 172.17.0.1:11434.
+# Uses qwen3.5-custom model (Qwen 3.5 27B Q4_K_M, 128K context).
+# Type "qwen --yolo" to use it, or set AGENT_CLI=qwen at container start.
+
+# Install Qwen Code CLI v0.11.0 (pinned for reproducible builds)
+RUN sudo npm install -g @qwen-code/qwen-code@0.11.0
+
+# Create Qwen Code config directory
+RUN mkdir -p /home/vibe/.qwen
+
+# Copy Qwen Code configuration (Ollama provider, model, sampling params)
+COPY --chown=vibe:vibe config/qwen/settings.json /home/vibe/.qwen/settings.json
+
+# Copy Qwen Code custom instructions (environment context for the agent)
+COPY --chown=vibe:vibe config/qwen/QWEN.md /home/vibe/.qwen/QWEN.md
+
 # Runtime model toggle: "local" = Ollama, "cloud" = Mistral API
 # Override at container start: docker run -e VIBE_MODE=cloud ...
 ENV VIBE_MODE=local
+
+# Agent CLI selection: "vibe" = Vibe CLI, "opencode" = OpenCode, "qwen" = Qwen Code
+# Override at container start: docker run -e AGENT_CLI=vibe ...
+ENV AGENT_CLI=vibe
 
 # Air-gapped environment: disable all network fetches
 ENV OPENCODE_DISABLE_MODELS_FETCH=true
@@ -1065,7 +1089,11 @@ RUN echo 'export PS1="\[\033[1;32m\]\u@vibe-terminal\[\033[0m\]:\[\033[1;34m\]\w
     && echo 'echo "  Shift + drag                 Native browser text selection"' >> /home/vibe/.bashrc \
     && echo 'echo "  Scroll wheel                 Scroll terminal history"' >> /home/vibe/.bashrc \
     && echo 'echo ""' >> /home/vibe/.bashrc \
-    && echo 'echo "- Type \"vibe --agent auto-approve\" to start Vibe CLI (default)"' >> /home/vibe/.bashrc \
+    && echo 'echo "Available AI agents:"' >> /home/vibe/.bashrc \
+    && echo 'echo "  vibe --agent auto-approve   Vibe CLI (Devstral)"' >> /home/vibe/.bashrc \
+    && echo 'echo "  opencode                    OpenCode CLI (Devstral)"' >> /home/vibe/.bashrc \
+    && echo 'echo "  qwen --yolo                 Qwen Code CLI (Qwen 3.5 27B)"' >> /home/vibe/.bashrc \
+    && echo 'echo ""' >> /home/vibe/.bashrc \
     && echo 'echo "- Your workspace is /home/vibe/workspace"' >> /home/vibe/.bashrc \
     && echo 'echo "- Password for sudo: password"' >> /home/vibe/.bashrc \
     && echo 'echo ""' >> /home/vibe/.bashrc

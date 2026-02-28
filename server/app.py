@@ -47,6 +47,7 @@ SERVER_PORT = 8081
 DOCKER_IMAGE = "vibe-terminal:latest"
 CONTAINER_PREFIX = "vibe-session-"
 VIBE_MODE = "local"  # "local" (Ollama) or "cloud" (Mistral API) — set via --vibe-mode
+AGENT_CLI = "vibe"  # "vibe", "opencode", or "qwen" — set via --agent-cli
 MAX_SESSIONS_PER_USER = 3
 # No automatic cleanup - containers persist until user deletes them
 SESSION_TIMEOUT_HOURS = None  # Disabled
@@ -293,6 +294,7 @@ class SessionManager:
             "Env": [
                 "TERM=xterm-256color",
                 f"VIBE_MODE={VIBE_MODE}",
+                f"AGENT_CLI={AGENT_CLI}",
             ],
             "HostConfig": {
                 "PortBindings": {
@@ -1558,8 +1560,13 @@ if __name__ == "__main__":
         "--vibe-mode", choices=["local", "cloud"], default="local",
         help="Vibe CLI model mode: local (Ollama) or cloud (Mistral API)",
     )
+    parser.add_argument(
+        "--agent-cli", choices=["vibe", "opencode", "qwen"], default="vibe",
+        help="Which AI coding CLI to start: vibe, opencode, or qwen (default: vibe)",
+    )
     args = parser.parse_args()
     VIBE_MODE = args.vibe_mode
+    AGENT_CLI = args.agent_cli
 
     try:
         from server.auth import is_auth_enabled
