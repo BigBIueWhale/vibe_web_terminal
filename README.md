@@ -340,16 +340,16 @@ If your Ollama is at a different address, edit `docker/config/vibe-config.toml`:
 api_base = "http://YOUR_OLLAMA_IP:11434/v1"
 ```
 
-### Devstral Model Setup
+### Ollama Model Setup
 
-**Pull and install the model:**
+**Create the models from their Modelfiles:**
 
 ```bash
-ollama pull devstral-small-2:24b-instruct-2512-q4_K_M
-ollama create devstral-vibe -f devstral-vibe/Modelfile
+ollama create devstral-vibe -f ollama-models/devstral-vibe.Modelfile
+ollama create qwen3.5-custom -f ollama-models/qwen3.5-custom.Modelfile
 ```
 
-See [`devstral-vibe/Modelfile`](devstral-vibe/Modelfile) for parameter overrides.
+See [`ollama-models/`](ollama-models/) for Modelfiles and parameter overrides.
 
 ### Container Resources
 

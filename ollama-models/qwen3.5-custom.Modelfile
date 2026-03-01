@@ -1,6 +1,9 @@
-FROM qwen3.5:27b-q4_K_M
+FROM hf.co/unsloth/Qwen3.5-27B-GGUF:Q4_K_M
 
 PARAMETER num_ctx 131072
 PARAMETER num_predict 81920
+PARAMETER temperature 1.0
+PARAMETER top_k 20
+PARAMETER top_p 0.95
 PARAMETER repeat_penalty 1.0
 PARAMETER presence_penalty 1.5
