@@ -342,10 +342,14 @@ api_base = "http://YOUR_OLLAMA_IP:11434/v1"
 
 ### Ollama Model Setup
 
-**Create the models from their Modelfiles:**
+**Pull base models and create custom tags with parameter overrides:**
 
 ```bash
+# Devstral (default agent)
 ollama create devstral-vibe -f ollama-models/devstral-vibe.Modelfile
+
+# Qwen 3.5 27B (requires: ollama pull qwen3.5:27b-q4_K_M)
+ollama pull qwen3.5:27b-q4_K_M
 ollama create qwen3.5-custom -f ollama-models/qwen3.5-custom.Modelfile
 ```
 

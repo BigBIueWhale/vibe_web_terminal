@@ -1,12 +1,7 @@
-# Download the text-only GGUF (skips the vision projector that breaks ollama):
-#   wget -O /tmp/Qwen3.5-27B-Q4_K_M.gguf https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-Q4_K_M.gguf
-FROM /tmp/Qwen3.5-27B-Q4_K_M.gguf
-
-# Use Ollama's built-in Qwen 3.5 chat template (includes tool calling support).
-# Without these, the raw HuggingFace GGUF has no chat template.
-TEMPLATE {{ .Prompt }}
-RENDERER qwen3.5
-PARSER qwen3.5
+# Based on the Ollama registry model (includes chat template, tool calling,
+# vision encoder, and correct GGUF metadata out of the box).
+# Requires: ollama pull qwen3.5:27b-q4_K_M
+FROM qwen3.5:27b-q4_K_M
 
 PARAMETER num_ctx 131072
 PARAMETER num_predict 81920
