@@ -989,7 +989,7 @@ COPY --chown=vibe:vibe config/opencode/opencode-agents.md /home/vibe/.config/ope
 # ============================================================
 # Qwen Code is the official Qwen terminal coding agent.
 # It connects to Ollama via the OpenAI-compatible API at 172.17.0.1:11434.
-# Uses qwen3.5-custom model (Qwen 3.5 27B Q4_K_M from Ollama registry, 128K context).
+# Uses qwen3.5-custom model (Qwen 3.5 27B Unsloth UD-Q4_K_XL, 128K context).
 # Type "qwen --yolo" to use it, or set AGENT_CLI=qwen at container start.
 
 # Install Qwen Code CLI v0.11.0 (pinned for reproducible builds)

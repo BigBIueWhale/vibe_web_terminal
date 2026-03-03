@@ -348,8 +348,9 @@ api_base = "http://YOUR_OLLAMA_IP:11434/v1"
 # Devstral (default agent)
 ollama create devstral-vibe -f ollama-models/devstral-vibe.Modelfile
 
-# Qwen 3.5 27B (requires: ollama pull qwen3.5:27b-q4_K_M)
-ollama pull qwen3.5:27b-q4_K_M
+# Qwen 3.5 27B (Unsloth UD-Q4_K_XL — download GGUF first, see Modelfile for instructions)
+wget -O /tmp/Qwen3.5-27B-UD-Q4_K_XL.gguf \
+  https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-UD-Q4_K_XL.gguf
 ollama create qwen3.5-custom -f ollama-models/qwen3.5-custom.Modelfile
 ```
 

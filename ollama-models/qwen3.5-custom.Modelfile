@@ -1,8 +1,35 @@
-# Based on the Ollama registry model (includes chat template, tool calling,
-# vision encoder, and correct GGUF metadata out of the box).
-# Requires: ollama pull qwen3.5:27b-q4_K_M
-FROM qwen3.5:27b-q4_K_M
+# Unsloth Dynamic 2.0 UD-Q4_K_XL — best available GGUF for Qwen 3.5 27B.
+#
+# Uses per-tensor dynamic quantization that protects the novel GDN/SSM layers
+# at much higher precision than standard Q4_K_M:
+#   ssm_alpha/ssm_beta: F16 (vs Q8_0 in Q4_K_M, vs Q4_K in Ollama registry)
+#   ssm_out:            Q8_0 (vs Q5_K in Q4_K_M, vs Q4_K in Ollama registry)
+#   attn_qkv:           Q5_K (vs Q4_K in Ollama registry)
+#   attn_gate:          Q5_K (vs Q4_K in Q4_K_M and Ollama registry)
+#
+# March 2, 2026 re-upload (iteration 2) — fixes the MXFP4 bug that plagued
+# the Feb 24 UD GGUFs. Zero MXFP4 tensors. 17.6 GB, 851 tensors, text-only.
+# Source: https://huggingface.co/unsloth/Qwen3.5-27B-GGUF
+#
+# Download the GGUF to /tmp (skips the OCI vision projector that breaks ollama):
+#   wget -O /tmp/Qwen3.5-27B-UD-Q4_K_XL.gguf \
+#     https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-UD-Q4_K_XL.gguf
+#
+# Then build the model:
+#   ollama create qwen3.5-custom -f qwen3.5-custom.Modelfile
+FROM /tmp/Qwen3.5-27B-UD-Q4_K_XL.gguf
 
+# Required for non-registry GGUFs: Ollama's built-in Qwen 3.5 chat template
+# with tool calling support. Without RENDERER/PARSER, the model gets a bare
+# {{ .Prompt }} template and tool calling silently breaks.
+TEMPLATE {{ .Prompt }}
+RENDERER qwen3.5
+PARSER qwen3.5
+
+# Qwen 3.5 model card "Thinking — General" profile.
+# NOTE: At 17.6 GB the UD-Q4_K_XL is ~0.9 GB larger than Q4_K_M. On RTX 5090
+# (32 GB VRAM), 131K context was already at the edge with Q4_K_M (~32.5 GiB).
+# If you get OOM, reduce num_ctx to 65536 or lower.
 PARAMETER num_ctx 131072
 PARAMETER num_predict 81920
 PARAMETER temperature 1.0
