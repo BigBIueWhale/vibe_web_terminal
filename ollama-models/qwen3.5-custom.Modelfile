@@ -11,9 +11,10 @@
 # the Feb 24 UD GGUFs. Zero MXFP4 tensors. 17.6 GB, 851 tensors, text-only.
 # Source: https://huggingface.co/unsloth/Qwen3.5-27B-GGUF
 #
-# Download the GGUF to /tmp (skips the OCI vision projector that breaks ollama):
+# Download the GGUF to /tmp (skips the OCI vision projector that breaks ollama).
+# Pinned to commit d0cb6e8 (March 2, 2026 iteration 2) for reproducibility:
 #   wget -O /tmp/Qwen3.5-27B-UD-Q4_K_XL.gguf \
-#     https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-UD-Q4_K_XL.gguf
+#     https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/d0cb6e84962d23e5b86e65f7c21e003faf0f0d68/Qwen3.5-27B-UD-Q4_K_XL.gguf
 #
 # Then build the model:
 #   ollama create qwen3.5-custom -f qwen3.5-custom.Modelfile
