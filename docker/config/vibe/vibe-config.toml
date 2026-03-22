@@ -56,7 +56,7 @@ output_price = 0.0
 
 # --- Mistral Cloud ---
 [[models]]
-name = "devstral-small-2501"
+name = "devstral-small-latest"
 provider = "mistral-cloud"
 alias = "devstral-cloud"
 input_price = 0.10
