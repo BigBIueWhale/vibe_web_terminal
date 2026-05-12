@@ -898,6 +898,73 @@ RUN git clone https://github.com/tsl0922/ttyd.git /tmp/ttyd && \
     cp ttyd /usr/local/bin/ttyd && \
     rm -rf /tmp/ttyd
 
+# ============================================================
+# BINARY REVERSE-ENGINEERING TOOLCHAIN
+# Static-analysis tools for Windows / Linux / macOS binaries (PE, ELF,
+# Mach-O, LE) plus extraction utilities for common installer wrappers
+# (InstallShield, Inno Setup, NSIS, MSI, Microsoft Cabinet).
+# ============================================================
+
+# Installer-payload extraction tools + OpenJDK 21 JDK.
+# Ghidra needs the full JDK (it invokes javac at startup); the
+# default-jre-headless installed earlier is not sufficient on its own.
+# 7zip 23.01 is the real (non-transitional) Ubuntu noble package — binary
+# is /usr/bin/7zz, not /usr/bin/7z; the p7zip-full installed earlier is a
+# transitional alias that pulls in this same package.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openjdk-21-jdk-headless \
+    7zip=23.01+dfsg-11 \
+    binwalk=2.3.4+dfsg1-5 \
+    cabextract=1.11-2 \
+    innoextract=1.9-0.1build1 \
+    unshield=1.5.1-1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# radare2 6.1.4 — CLI reverse-engineering framework (built from source via ACR)
+# Pinned to commit 4661541e40947fbc269b0c2686d1cd52ad69c1dc for reproducibility.
+# Built with --with-rpath so the binary is self-contained under /opt/radare2.
+RUN git clone --depth 1 --branch 6.1.4 https://github.com/radareorg/radare2 /tmp/r2 \
+    && cd /tmp/r2 \
+    && actual=$(git rev-parse HEAD) \
+    && [ "$actual" = "4661541e40947fbc269b0c2686d1cd52ad69c1dc" ] \
+        || (echo "radare2 commit drift: expected 4661541e..., got $actual" && exit 1) \
+    && CFLAGS="-O2" LDFLAGS="-Wl,--as-needed" \
+       ./configure --prefix=/opt/radare2 --with-rpath \
+    && make -j$(nproc) \
+    && make install \
+    && rm -rf /tmp/r2
+
+ENV PATH="/opt/radare2/bin:$PATH"
+
+# Ghidra 12.0.4 PUBLIC build 20260303 — open-source reverse-engineering suite.
+# SHA-256-verified download from the official GitHub release.
+RUN curl -fsSL -o /tmp/ghidra.zip \
+        https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.0.4_build/ghidra_12.0.4_PUBLIC_20260303.zip \
+    && echo "c3b458661d69e26e203d739c0c82d143cc8a4a29d9e571f099c2cf4bda62a120  /tmp/ghidra.zip" \
+        | sha256sum --check --status \
+    && unzip -q /tmp/ghidra.zip -d /opt \
+    && mv /opt/ghidra_12.0.4_PUBLIC /opt/ghidra \
+    && rm /tmp/ghidra.zip
+
+ENV GHIDRA_INSTALL_DIR=/opt/ghidra
+ENV PATH="/opt/ghidra/support:$PATH"
+
+# Python packages for PE / binary / installer static analysis.
+#   pefile      Microsoft Portable Executable parser (import/export tables,
+#               sections, headers, version info)
+#   lief        Multi-format binary parser (PE, ELF, Mach-O, OAT, DEX)
+#   capstone    Intel x86 / AMD64 / ARM / MIPS disassembly engine
+#   r2pipe      JSON-pipe bindings to a running radare2 instance
+#   pyghidra    CPython binding to the Ghidra programmatic API
+#   JPype1      Java/Python bridge (transitively required by pyghidra)
+RUN pip3 install --break-system-packages --no-cache-dir \
+    pefile==2024.8.26 \
+    lief==0.17.6 \
+    capstone==5.0.7 \
+    r2pipe==1.9.8 \
+    JPype1==1.5.2 \
+    pyghidra==3.0.2
+
 # Install uv for Python package management
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"

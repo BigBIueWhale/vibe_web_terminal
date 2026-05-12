@@ -28,6 +28,7 @@ You can accomplish far more than basic code editing:
 - **Create diagrams**: PlantUML (`plantuml`), Mermaid CLI (`mmdc` for PNG/SVG/PDF), Graphviz (`dot`), gnuplot. Generate UML from Python code with pyreverse.
 - **Work with Wikipedia/MediaWiki**: Parse and manipulate wikitext (`mwparserfromhell`, `wikitextparser`), access MediaWiki APIs (`mwclient`), convert between MediaWiki and other formats (`pandoc -f mediawiki`).
 - **Build software**: Full toolchains for C/C++/Rust/Go/Python/Node/Ruby. Cross-compile for ARM. Debug with gdb, valgrind.
+- **Reverse-engineer binaries**: Static analysis of PE / ELF / Mach-O / LE executables with `pefile`, `lief`, `capstone` (Python), `r2` / `rabin2` (radare2 CLI), and Ghidra (`analyzeHeadless` for scripted decompilation, `pyghidra` for Python bindings; `GHIDRA_INSTALL_DIR` is set). Extract installer payloads with `7zz`, `binwalk`, `cabextract`, `innoextract`, `unshield`.
 - **Network and security**: Analyze packets (tshark, scapy), scan networks (nmap), make HTTP requests (curl, httpie, requests).
 - **Work with databases**: Query SQLite, PostgreSQL, Redis, DuckDB directly.
 
